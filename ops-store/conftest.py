@@ -3,72 +3,80 @@ ops-store/conftest.py
 ======================
 Pytest configuration for the ops-store service.
 
-Adds the project root (D:.../OilOps-PredictiveCore) and the ops-store
-service root to sys.path so that:
+Adds the project root (D:.../OilOps-PredictiveCore) to sys.path so that
+``from shared.config import Settings`` and similar cross-service imports
+resolve correctly.
 
-  - ``from shared.config import Settings`` resolves via the project root.
-  - ``from app.storage_interface import StorageInterface`` resolves via the
-    service root.
-  - ``from ops_store.app.storage_interface import StorageInterface`` resolves
-    via a sys.modules alias registered below (the filesystem directory is
-    named ``ops-store`` with a hyphen, which is not a valid Python identifier;
-    the alias bridges this gap without altering the directory structure).
+IMPORTANT — sys.modules["app"] isolation
+-----------------------------------------
+This conftest MUST NOT call ``importlib.import_module("app")`` or add the
+ops-store service root to ``sys.path``.  Doing either would register
+``sys.modules["app"]`` with the ops-store app package.  When pytest then
+collects another service in the same session (e.g. ``ops-ingest/tests/``),
+its conftest adds ``ops-ingest/`` to ``sys.path`` and expects
+``sys.modules["app"]`` to resolve to ``ops-ingest/app/``.  Clobbering that
+cache causes ImportError / ERRORs during test collection of the second
+service (the bug fixed in this TASK-005 retry).
 
-This mirrors the convention established in ops-feature/conftest.py, extended
-with the module aliasing needed for ``ops_store.*`` imports.
+Fix: build the ``ops_store.*`` aliases exclusively via
+``importlib.util.spec_from_file_location``, which targets specific files and
+registers them only under the ``ops_store.*`` names — leaving
+``sys.modules["app"]`` untouched.  The service root (ops-store/) is NOT
+added to sys.path; ``--import-mode=importlib`` in pytest.ini handles module
+isolation at the session level.
 """
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import sys
-import types
 from pathlib import Path
+from types import ModuleType
 
 # Project root: the directory that contains shared/, ops-store/, etc.
 _PROJECT_ROOT = Path(__file__).parent.parent
 # Service root: ops-store/ (filesystem name contains a hyphen)
 _SERVICE_ROOT = Path(__file__).parent
+_APP_DIR = _SERVICE_ROOT / "app"
 
-for _path in (_PROJECT_ROOT, _SERVICE_ROOT):
+# Only the project root is added to sys.path.
+# The service root (ops-store/) is intentionally NOT added: adding it would
+# make ``import app`` resolve to ops-store/app and register
+# sys.modules["app"] with the wrong package, breaking any subsequent service
+# (e.g. ops-ingest) that also has an ``app/`` directory and tries to import
+# from it.  All ops_store.* imports below are wired via spec_from_file_location
+# without going through sys.path resolution.
+for _path in (_PROJECT_ROOT,):
     _path_str = str(_path)
     if _path_str not in sys.path:
         sys.path.insert(0, _path_str)
 
 # ---------------------------------------------------------------------------
-# Module alias: expose the service as ``ops_store`` in sys.modules so that
-# ``from ops_store.app.storage_interface import StorageInterface`` works even
-# though the directory on disk is ``ops-store`` (hyphenated).
+# Register ops_store alias WITHOUT polluting sys.modules["app"]
 #
-# Strategy: create a lightweight namespace package ``ops_store`` and point it
-# at the same loader/spec that would be used for ``app.*`` imports, by
-# registering ``ops_store`` -> the service root package and ``ops_store.app``
-# -> ``app`` (already importable from _SERVICE_ROOT on sys.path).
+# We build lightweight namespace modules for ops_store and ops_store.app,
+# then use spec_from_file_location to load the concrete implementation file
+# directly under the canonical ops_store.app.storage_interface name.
 # ---------------------------------------------------------------------------
 
 if "ops_store" not in sys.modules:
-    # Create a top-level namespace package for ops_store pointing at the
-    # service root so that sub-package imports are resolved correctly.
-    _pkg = types.ModuleType("ops_store")
-    _pkg.__path__ = [str(_SERVICE_ROOT)]  # type: ignore[attr-defined]
-    _pkg.__package__ = "ops_store"
-    _pkg.__spec__ = importlib.util.spec_from_file_location(  # type: ignore[attr-defined]
-        "ops_store",
-        str(_SERVICE_ROOT / "__init__.py"),
-        submodule_search_locations=[str(_SERVICE_ROOT)],
-    )
-    sys.modules["ops_store"] = _pkg
+    ops_store_mod = ModuleType("ops_store")
+    ops_store_mod.__path__ = [str(_SERVICE_ROOT)]  # type: ignore[attr-defined]
+    ops_store_mod.__package__ = "ops_store"
+    sys.modules["ops_store"] = ops_store_mod
 
-# Ensure ops_store.app resolves to the ``app`` sub-package already importable
-# from _SERVICE_ROOT.
 if "ops_store.app" not in sys.modules:
-    _app = importlib.import_module("app")
-    _app.__name__ = "ops_store.app"
-    _app.__package__ = "ops_store.app"
-    sys.modules["ops_store.app"] = _app
+    ops_store_app_mod = ModuleType("ops_store.app")
+    ops_store_app_mod.__path__ = [str(_APP_DIR)]  # type: ignore[attr-defined]
+    ops_store_app_mod.__package__ = "ops_store.app"
+    sys.modules["ops_store.app"] = ops_store_app_mod
 
 if "ops_store.app.storage_interface" not in sys.modules:
-    _si = importlib.import_module("app.storage_interface")
-    _si.__name__ = "ops_store.app.storage_interface"
-    _si.__package__ = "ops_store.app"
-    sys.modules["ops_store.app.storage_interface"] = _si
+    si_spec = importlib.util.spec_from_file_location(
+        "ops_store.app.storage_interface",
+        str(_APP_DIR / "storage_interface.py"),
+    )
+    if si_spec and si_spec.loader:
+        si_mod = importlib.util.module_from_spec(si_spec)
+        sys.modules["ops_store.app.storage_interface"] = si_mod
+        si_spec.loader.exec_module(si_mod)  # type: ignore[union-attr]
