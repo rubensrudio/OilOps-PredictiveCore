@@ -74,11 +74,9 @@ class TestSettingsDefaults:
 
 class TestSettingsEnvOverride:
     def test_fft_bins_overridden_by_env(self, monkeypatch):
+        # pydantic-settings reads env vars at Settings() instantiation time,
+        # so no importlib.reload() is needed — each Settings() call is independent.
         monkeypatch.setenv("OILOPS_FFT_BINS", "128")
-        from importlib import reload
-        import shared.config as config_module
-
-        reload(config_module)
         from shared.config import Settings
 
         s = Settings()

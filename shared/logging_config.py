@@ -26,9 +26,10 @@ Public API
 
 from __future__ import annotations
 
+import datetime
 import logging
 import sys
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any, MutableMapping
 
 from pythonjsonlogger import jsonlogger
@@ -41,9 +42,16 @@ _TRACE_ID_SENTINEL: str = "n/a"
 _trace_id_var: ContextVar[str] = ContextVar("trace_id", default=_TRACE_ID_SENTINEL)
 
 
-def set_trace_id(trace_id: str) -> None:
-    """Set the trace_id for the current async context."""
-    _trace_id_var.set(trace_id)
+def set_trace_id(trace_id: str) -> Token[str]:
+    """Set the trace_id for the current async context.
+
+    Returns the :class:`contextvars.Token` produced by
+    :meth:`~contextvars.ContextVar.set`.  Callers that need to restore the
+    previous value (e.g. middleware that wraps a single request) should keep
+    the token and call ``_trace_id_var.reset(token)`` when done.  For most
+    application code, the token can be safely discarded.
+    """
+    return _trace_id_var.set(trace_id)
 
 
 def get_trace_id() -> str:
@@ -88,11 +96,15 @@ class _OilOpsJsonFormatter(jsonlogger.JsonFormatter):
             log_record["timestamp"] = log_record.pop("asctime")
         elif "timestamp" not in log_record:
             # Fallback: compute from the log record's created epoch value.
-            import datetime
-
-            log_record["timestamp"] = datetime.datetime.utcfromtimestamp(
-                record.created
-            ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            # datetime.datetime.fromtimestamp(..., tz=utc) is used instead of
+            # the deprecated utcfromtimestamp() which produces a naive datetime
+            # and raises DeprecationWarning on Python 3.12+.
+            log_record["timestamp"] = (
+                datetime.datetime.fromtimestamp(
+                    record.created, tz=datetime.timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                + "Z"
+            )
 
         # --- mandatory field: level ----------------------------------------
         if "levelname" in log_record:
@@ -138,6 +150,16 @@ def get_logger(service_name: str, level: int = logging.INFO) -> logging.Logger:
     logging.Logger
         A logger instance with exactly one :class:`logging.StreamHandler`
         writing to *stdout* using :class:`_OilOpsJsonFormatter`.
+
+    .. note::
+        **Idempotency / level-change limitation** — once a logger has been
+        configured by a first call to ``get_logger(name)``, subsequent calls
+        with the *same* ``service_name`` but a *different* ``level`` return the
+        existing logger **without** updating its level.  This is intentional to
+        avoid duplicate handlers, but it means the level set on the first call
+        wins for the lifetime of the process.  If you need to change the level
+        at runtime, retrieve the logger via ``logging.getLogger(name)`` and call
+        ``.setLevel()`` directly.
     """
     logger = logging.getLogger(service_name)
 
