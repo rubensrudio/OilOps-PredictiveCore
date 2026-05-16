@@ -240,3 +240,59 @@ class TestCanonicalReadingInvalidPayload:
 
         with pytest.raises(ValidationError):
             CanonicalReading(**_make_payload(source_protocol=""))
+
+
+# ---------------------------------------------------------------------------
+# Regression: AwareDatetime enforcement — RN-01 UTC contract (QA round 1)
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalReadingAwareDatetimeEnforcement:
+    """Regression tests for the QA finding in round 1.
+
+    ``timestamp`` and ``ingested_at`` must be declared as
+    ``pydantic.AwareDatetime`` so that naive datetimes (those without tzinfo)
+    are rejected with a ``ValidationError`` instead of being silently accepted.
+
+    This enforces RN-01 (UTC contract) and the TIMESTAMPTZ column type
+    documented in plan.md § 4.1.
+    """
+
+    def test_naive_datetime_raises_validation_error(self):
+        """datetime(2026,5,16,10,0,0) without tzinfo must raise ValidationError.
+
+        A naive datetime object has no timezone information and therefore
+        cannot be guaranteed to be UTC — violating RN-01.
+        """
+        from shared.schemas.canonical import CanonicalReading
+
+        naive_dt = datetime(2026, 5, 16, 10, 0, 0)  # no tzinfo
+        assert naive_dt.tzinfo is None, "Precondition: datetime must be naive"
+
+        with pytest.raises(ValidationError) as exc_info:
+            CanonicalReading(**_make_payload(timestamp=naive_dt, ingested_at=naive_dt))
+
+        errors = exc_info.value.errors()
+        error_fields = [e["loc"][-1] for e in errors]
+        assert "timestamp" in error_fields or "ingested_at" in error_fields, (
+            f"Expected ValidationError on 'timestamp' or 'ingested_at', got: {error_fields}"
+        )
+
+    def test_iso_string_without_timezone_raises_validation_error(self):
+        """ISO 8601 string without offset (e.g. '2026-05-16T10:00:00') must raise ValidationError.
+
+        A string without a timezone offset (no 'Z', no '+HH:MM') represents a
+        naive datetime and must be rejected to enforce the UTC contract of RN-01.
+        """
+        from shared.schemas.canonical import CanonicalReading
+
+        naive_iso = "2026-05-16T10:00:00"  # no 'Z' and no '+00:00' offset
+
+        with pytest.raises(ValidationError) as exc_info:
+            CanonicalReading(**_make_payload(timestamp=naive_iso, ingested_at=naive_iso))
+
+        errors = exc_info.value.errors()
+        error_fields = [e["loc"][-1] for e in errors]
+        assert "timestamp" in error_fields or "ingested_at" in error_fields, (
+            f"Expected ValidationError on 'timestamp' or 'ingested_at', got: {error_fields}"
+        )

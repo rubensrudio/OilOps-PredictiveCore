@@ -13,6 +13,12 @@ All fields that are strings enforce ``min_length=1`` so that blank values are
 rejected at the boundary — consistent with OWASP input-validation guidance and
 the spec's INIT-04 (validation with descriptive messages).
 
+Datetime fields use ``pydantic.AwareDatetime`` instead of plain ``datetime``
+so that naive datetimes (without tzinfo) are rejected at the Pydantic
+validation boundary with a descriptive ``ValidationError``.  This enforces
+the UTC contract from RN-01 and the TIMESTAMPTZ column type in the DuckDB/
+SQLite schemas defined in plan.md § 4.1.
+
 Usage
 -----
 >>> from shared.schemas.canonical import CanonicalReading
@@ -36,10 +42,9 @@ False
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 
 class CanonicalReading(BaseModel):
@@ -59,8 +64,10 @@ class CanonicalReading(BaseModel):
         Must be a non-empty string; auto-registration in ``ops-store`` is
         triggered by ``ops-ingest`` when the asset is unknown (INIT-03).
     timestamp:
-        Moment at which the measurement was taken, **in UTC**.  Pydantic
-        parses ISO 8601 strings automatically.
+        Moment at which the measurement was taken, **in UTC**.  Declared as
+        ``AwareDatetime`` so that naive datetimes (without tzinfo) are rejected
+        with a ``ValidationError`` — enforcing the UTC contract of RN-01.
+        Pydantic parses ISO 8601 strings with a timezone offset automatically.
     metric_name:
         Name of the measured quantity (e.g. ``"vibration_x"``).
     value:
@@ -72,7 +79,8 @@ class CanonicalReading(BaseModel):
         ``"rest_batch"``, ``"mqtt"``, ``"kafka"``, ``"opcua"``.
     ingested_at:
         Timestamp at which ``ops-ingest`` created this canonical record,
-        **in UTC**.
+        **in UTC**.  Declared as ``AwareDatetime`` — same enforcement as
+        ``timestamp``; naive values are rejected with a ``ValidationError``.
     ingestion_id:
         UUID of the ingestion batch that produced this record.  Links back
         to ``ingestion_batches`` in SQLite.
@@ -90,8 +98,8 @@ class CanonicalReading(BaseModel):
     asset_id: Annotated[str, Field(min_length=1, max_length=64)] = Field(
         description="Canonical identifier of the originating asset.",
     )
-    timestamp: datetime = Field(
-        description="Moment at which the measurement was taken (UTC).",
+    timestamp: AwareDatetime = Field(
+        description="Moment at which the measurement was taken (UTC). Must be timezone-aware.",
     )
     metric_name: Annotated[str, Field(min_length=1, max_length=128)] = Field(
         description="Name of the measured quantity.",
@@ -108,8 +116,8 @@ class CanonicalReading(BaseModel):
             "(rest_batch | mqtt | kafka | opcua)."
         ),
     )
-    ingested_at: datetime = Field(
-        description="Timestamp at which ops-ingest created this canonical record (UTC).",
+    ingested_at: AwareDatetime = Field(
+        description="Timestamp at which ops-ingest created this canonical record (UTC). Must be timezone-aware.",
     )
     ingestion_id: uuid.UUID = Field(
         description="UUID of the ingestion batch that produced this record.",
