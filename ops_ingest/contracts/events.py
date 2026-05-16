@@ -85,13 +85,21 @@ class IngestionCompletedEvent(BaseModel):
     model_config = {"populate_by_name": True}
 
     trace_id: Annotated[str, Field(min_length=1, max_length=64)] = Field(
-        description="Distributed trace identifier propagated from the originating request.",
+        description=(
+            "Distributed trace identifier propagated from the originating"
+            " request."
+        ),
     )
     ingestion_id: uuid.UUID = Field(
-        description="UUID of the ingestion batch (maps to ingestion_batches.id in SQLite).",
+        description=(
+            "UUID of the ingestion batch"
+            " (maps to ingestion_batches.id in SQLite)."
+        ),
     )
     asset_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
-        description="Non-empty list of asset identifiers that received new readings.",
+        description=(
+            "Non-empty list of asset identifiers that received new readings."
+        ),
     )
     records_accepted: int = Field(
         ge=0,
@@ -102,7 +110,9 @@ class IngestionCompletedEvent(BaseModel):
         description="Count of readings rejected due to validation errors.",
     )
     occurred_at: AwareDatetime = Field(
-        description="Timestamp at which the event was created (UTC, timezone-aware).",
+        description=(
+            "Timestamp at which the event was created (UTC, timezone-aware)."
+        ),
     )
 
 
@@ -132,19 +142,27 @@ class FeaturesComputedEvent(BaseModel):
     model_config = {"populate_by_name": True}
 
     trace_id: Annotated[str, Field(min_length=1, max_length=64)] = Field(
-        description="Distributed trace identifier propagated from the originating request.",
+        description=(
+            "Distributed trace identifier propagated from the originating"
+            " request."
+        ),
     )
     asset_id: Annotated[str, Field(min_length=1, max_length=64)] = Field(
         description="Identifier of the asset for which features were computed.",
     )
     feature_record_id: uuid.UUID = Field(
-        description="UUID of the persisted feature record (feature_records.id in DuckDB).",
+        description=(
+            "UUID of the persisted feature record"
+            " (feature_records.id in DuckDB)."
+        ),
     )
     feature_version: Annotated[str, Field(min_length=1, max_length=32)] = Field(
         description="Version of the feature pipeline that produced this record.",
     )
     occurred_at: AwareDatetime = Field(
-        description="Timestamp at which the event was created (UTC, timezone-aware).",
+        description=(
+            "Timestamp at which the event was created (UTC, timezone-aware)."
+        ),
     )
 
 
@@ -189,10 +207,16 @@ class PredictionEmittedEvent(BaseModel):
     model_config = {"populate_by_name": True, "protected_namespaces": ()}
 
     trace_id: Annotated[str, Field(min_length=1, max_length=64)] = Field(
-        description="Distributed trace identifier propagated from the originating request.",
+        description=(
+            "Distributed trace identifier propagated from the originating"
+            " request."
+        ),
     )
     prediction_id: uuid.UUID = Field(
-        description="UUID of the persisted prediction record (predictions.id in SQLite).",
+        description=(
+            "UUID of the persisted prediction record"
+            " (predictions.id in SQLite)."
+        ),
     )
     asset_id: Annotated[str, Field(min_length=1, max_length=64)] = Field(
         description="Identifier of the asset for which the prediction was made.",
@@ -214,8 +238,13 @@ class PredictionEmittedEvent(BaseModel):
         description="Confidence of the prediction in the range [0.0, 1.0].",
     )
     alert: bool = Field(
-        description="True when anomaly_score exceeds the model's configured anomaly_threshold.",
+        description=(
+            "True when anomaly_score exceeds the model's configured"
+            " anomaly_threshold."
+        ),
     )
     occurred_at: AwareDatetime = Field(
-        description="Timestamp at which the event was created (UTC, timezone-aware).",
+        description=(
+            "Timestamp at which the event was created (UTC, timezone-aware)."
+        ),
     )
