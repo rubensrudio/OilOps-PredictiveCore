@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import IngestReading, IngestRequest, IngestionResponse
+from ops_ingest.app.schemas import IngestReading, IngestRequest, IngestionResponse
 
 
 # ---------------------------------------------------------------------------
