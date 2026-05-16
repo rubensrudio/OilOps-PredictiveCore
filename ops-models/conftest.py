@@ -3,8 +3,7 @@ ops-models/conftest.py
 =======================
 Pytest configuration for the ops-models service.
 
-Adds the project root (D:.../OilOps-PredictiveCore) and the ops-models
-service root to sys.path so that:
+Adds ONLY the project root (D:.../OilOps-PredictiveCore) to sys.path so that:
 
   - ``from shared.config import Settings`` resolves via the project root.
   - ``from ops_models.app.schemas import PredictionRequest`` resolves via
@@ -13,17 +12,23 @@ service root to sys.path so that:
 Namespace isolation fix
 -----------------------
 Both ops-models and ops-ingest ship a top-level ``app/`` package.  When
-pytest runs both services in the same session (integration wave), the first
-``sys.path.insert(0, <service_root>)`` wins and the wrong ``app`` package
-is imported by the other service's tests.
+pytest runs both services in the same session (integration wave), adding
+``<service_root>`` to ``sys.path`` causes the wrong ``app`` package to be
+imported by whichever service loads second.
 
-To prevent this, this conftest registers an ``ops_models.app.schemas``
-alias in ``sys.modules`` using ``importlib.util``.  Tests in this service
-import schemas via the qualified name::
+To prevent this, ONLY ``_PROJECT_ROOT`` is inserted into sys.path.  The
+``ops_models.app`` and ``ops_models.app.schemas`` aliases are registered
+directly in ``sys.modules`` using ``importlib.util`` so that tests can use
+the fully-qualified import path::
 
     from ops_models.app.schemas import PredictionResult
 
-so that they remain unambiguous regardless of sys.path ordering.
+and remain unambiguous regardless of sys.path ordering.
+
+The intermediate ``ops_models.app`` node is registered first with a
+``__path__`` pointing at the real ``app/`` directory, satisfying the Python
+import machinery requirement that parent namespace packages exist before
+child modules are loaded.
 """
 
 from __future__ import annotations
@@ -37,23 +42,43 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 _SERVICE_ROOT = Path(__file__).parent  # ops-models/
 _APP_DIR = _SERVICE_ROOT / "app"
 
-for _path in (_PROJECT_ROOT, _SERVICE_ROOT):
-    _path_str = str(_path)
-    if _path_str not in sys.path:
-        sys.path.insert(0, _path_str)
+# Insert ONLY the project root so that ``shared.*`` is resolvable.
+# _SERVICE_ROOT is intentionally NOT added: doing so would let
+# ``import app`` resolve to ops-models/app in multi-service sessions,
+# shadowing ops-ingest/app (or vice-versa).
+_path_str = str(_PROJECT_ROOT)
+if _path_str not in sys.path:
+    sys.path.insert(0, _path_str)
 
 # ---------------------------------------------------------------------------
-# Register ops_models.app alias so tests can use qualified imports and avoid
-# namespace collisions with ops-ingest's "app" package in integrated sessions.
+# Register ops_models namespace package in sys.modules
 # ---------------------------------------------------------------------------
 
 if "ops_models" not in sys.modules:
     ops_models_mod = ModuleType("ops_models")
     sys.modules["ops_models"] = ops_models_mod
 
+# ---------------------------------------------------------------------------
+# Register ops_models.app as namespace package parent (BLOCKER 2 fix).
+# The Python import machinery requires the intermediate node to exist in
+# sys.modules with __path__ set before any child module (ops_models.app.*)
+# can be loaded or found via qualified import.
+# ---------------------------------------------------------------------------
+
 if "ops_models.app" not in sys.modules:
+    ops_models_app = ModuleType("ops_models.app")
+    ops_models_app.__path__ = [str(_APP_DIR)]  # type: ignore[assignment]
+    ops_models_app.__package__ = "ops_models.app"
+    sys.modules["ops_models.app"] = ops_models_app
+
+# ---------------------------------------------------------------------------
+# Register ops_models.app.schemas as a concrete module loaded from disk.
+# ---------------------------------------------------------------------------
+
+if "ops_models.app.schemas" not in sys.modules:
     schemas_spec = importlib.util.spec_from_file_location(
-        "ops_models.app.schemas", str(_APP_DIR / "schemas.py")
+        "ops_models.app.schemas",
+        str(_APP_DIR / "schemas.py"),
     )
     if schemas_spec and schemas_spec.loader:
         schemas_mod = importlib.util.module_from_spec(schemas_spec)
