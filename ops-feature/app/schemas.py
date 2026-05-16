@@ -23,7 +23,7 @@ Design notes
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -96,7 +96,7 @@ class FeatureRecord(BaseModel):
         ),
     )
     computed_at: datetime = Field(
-        default_factory=lambda: datetime.now().astimezone(),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp when this feature record was computed.",
     )
 
