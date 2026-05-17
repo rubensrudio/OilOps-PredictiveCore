@@ -78,13 +78,13 @@ CREATE INDEX IF NOT EXISTS idx_model_versions_asset_active
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS predictions (
     id               TEXT    NOT NULL,   -- UUID v4 prediction_id (PK)
-    asset_id         TEXT    NOT NULL    REFERENCES assets(id),
+    asset_id         TEXT    NOT NULL,   -- Phase 1: FK not enforced (ops-models uses separate DB)
     asset_class      TEXT    NOT NULL,
     anomaly_score    REAL    NOT NULL,
     confidence_score REAL    NOT NULL,
     alert            INTEGER NOT NULL    CHECK (alert IN (0, 1)),
     severity         TEXT                CHECK (severity IN ('low', 'medium', 'high') OR severity IS NULL),
-    model_id         TEXT    NOT NULL    REFERENCES model_versions(id),
+    model_id         TEXT    NOT NULL,   -- Phase 1: FK not enforced (ops-models uses separate DB)
     model_version    TEXT    NOT NULL,
     feature_record_id TEXT   NOT NULL,  -- UUID; FK lives in DuckDB (cross-db)
     predicted_at     TEXT    NOT NULL,  -- ISO 8601 UTC

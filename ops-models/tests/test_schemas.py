@@ -104,6 +104,8 @@ class TestPredictionResult:
             "severity": "high",
             "predicted_at": _NOW,
             "model_version": "vibration-autoencoder-v1",
+            "model_id": "rotating_equipment-v1.0.0",
+            "feature_record_id": str(uuid.uuid4()),
             "explain_status": "pending",
         }
         base.update(overrides)

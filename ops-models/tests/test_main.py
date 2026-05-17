@@ -150,6 +150,10 @@ def test_predict_with_active_model_returns_200(client: TestClient) -> None:
     assert isinstance(body["alert"], bool)
     assert "prediction_id" in body
     assert "model_version" in body
+    assert "model_id" in body
+    assert body["model_id"] == _ACTIVE_MODEL["model_id"]
+    assert "feature_record_id" in body
+    assert body["feature_record_id"] == _PREDICT_PAYLOAD["feature_record_id"]
 
     # OnnxRunner was initialised with the correct artefact path.
     with patch("ops_models.app.main.OnnxRunner") as mock_runner_cls:
@@ -315,6 +319,8 @@ def _make_prediction_result(**overrides: Any) -> PredictionResult:
         "severity": "medium",
         "predicted_at": datetime.now(tz=timezone.utc),
         "model_version": "vibration-autoencoder-v1",
+        "model_id": "rotating_equipment-v1.0.0",
+        "feature_record_id": str(uuid.uuid4()),
         "explain_status": "pending",
     }
     base.update(overrides)

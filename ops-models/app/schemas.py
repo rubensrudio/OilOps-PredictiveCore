@@ -160,6 +160,15 @@ class PredictionResult(BaseModel):
         UTC timestamp when inference was executed.
     model_version:
         Version string of the model that produced this prediction (RN-05).
+    model_id:
+        UUID of the ``model_versions`` row in the ModelRegistry that produced
+        this prediction.  Stored in ``predictions.model_id`` in ops-store.
+        Phase 1: FK to ``model_versions`` in ops-store is not enforced because
+        ops-models maintains a separate ModelRegistry (separate SQLite DB).
+    feature_record_id:
+        UUID of the ``feature_records`` row (in DuckDB via ops-store) that
+        served as the input vector for this prediction.  Stored in
+        ``predictions.feature_record_id`` in ops-store SQLite.
     explain_status:
         One of ``"pending"``, ``"ready"``, ``"failed"``.  Defaults to
         ``"pending"`` because SHAP attribution is computed asynchronously
@@ -224,6 +233,16 @@ class PredictionResult(BaseModel):
         description=(
             "Version string of the model that produced this prediction (RN-05)."
         ),
+    )
+    model_id: str = Field(
+        ...,
+        min_length=1,
+        description="UUID of the model_versions row used for this prediction.",
+    )
+    feature_record_id: str = Field(
+        ...,
+        min_length=1,
+        description="UUID of the feature_record that triggered this prediction.",
     )
     explain_status: _ExplainStatus = Field(
         default="pending",

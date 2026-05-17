@@ -324,6 +324,8 @@ def predict(
         alert=alert,
         severity=severity,
         model_version=model_meta.get("version", "unknown"),
+        model_id=model_meta["model_id"],
+        feature_record_id=request.feature_record_id,
         explain_status="pending",
     )
 
