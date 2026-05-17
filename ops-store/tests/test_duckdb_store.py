@@ -154,6 +154,32 @@ class TestWriteRawReadings:
         result = store.write_raw_readings(readings)
         assert result == 2
 
+    def test_reingest_same_uuid_does_not_raise(self, store: DuckDBStore) -> None:
+        """Re-ingesting the same reading (same id UUID) must not raise.
+
+        Verifies INSERT OR IGNORE semantics: a second write of an already
+        persisted row is silently dropped.  The database must contain exactly
+        one record after both writes (idempotency — RN-02).
+        """
+        reading = _raw_reading(asset_id="PUMP-001", ts=_utc(2026, 5, 16, 10))
+
+        # First write — row persisted normally.
+        store.write_raw_readings([reading])
+
+        # Second write of the exact same dict (same id UUID) — must NOT raise.
+        store.write_raw_readings([reading])
+
+        # Database must contain exactly one row for this asset.
+        result = store.get_raw_readings_by_asset(
+            asset_id="PUMP-001",
+            from_ts=_utc(2026, 5, 16, 9),
+            to_ts=_utc(2026, 5, 16, 12),
+        )
+        assert len(result) == 1, (
+            "Expected exactly 1 row after re-ingesting the same UUID; "
+            f"got {len(result)}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests -- get_raw_readings_by_asset (TASK-006 primary criterion)
