@@ -99,16 +99,18 @@ app.add_middleware(AdvisoryMiddleware)
 app.add_middleware(TracingMiddleware)
 
 # ---------------------------------------------------------------------------
-# Router registration (TASK-022 + TASK-023)
+# Router registration (TASK-022 + TASK-023 + TASK-024)
 # ---------------------------------------------------------------------------
 
 from ops_api.app.routers.telemetry import router as _telemetry_router  # noqa: E402
 from ops_api.app.routers.predictions import router as _predictions_router  # noqa: E402
 from ops_api.app.routers.explain import router as _explain_router  # noqa: E402
+from ops_api.app.routers.stream import router as _stream_router  # noqa: E402
 
 app.include_router(_telemetry_router)
 app.include_router(_predictions_router)
 app.include_router(_explain_router)
+app.include_router(_stream_router)
 
 # ---------------------------------------------------------------------------
 # Root endpoint — advisory notice (RN-06)
