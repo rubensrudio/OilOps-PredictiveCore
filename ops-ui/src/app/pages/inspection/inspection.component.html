@@ -1,0 +1,80 @@
+<section class="inspection-container" aria-label="Prediction Inspection">
+  <h1>OilOps — Prediction Inspection</h1>
+
+  <form class="inspection-form" (ngSubmit)="inspect()" aria-label="Asset inspection form">
+    <div class="form-group">
+      <label for="assetIdInput">Asset ID</label>
+      <input
+        id="assetIdInput"
+        type="text"
+        [(ngModel)]="assetId"
+        name="assetId"
+        placeholder="e.g. PUMP-001"
+        aria-label="Asset ID"
+        aria-required="true"
+        autocomplete="off"
+      />
+    </div>
+    <button
+      type="submit"
+      [disabled]="loading || !assetId.trim()"
+      aria-label="Inspect prediction for asset"
+    >
+      <span *ngIf="!loading">Inspect</span>
+      <span *ngIf="loading" aria-live="polite">Loading...</span>
+    </button>
+  </form>
+
+  <div *ngIf="loading" class="loading-indicator" role="status" aria-live="polite">
+    <span>Fetching prediction data...</span>
+  </div>
+
+  <div *ngIf="errorMessage" class="error-message" role="alert" aria-live="assertive">
+    {{ errorMessage }}
+  </div>
+
+  <div *ngIf="result && !loading" class="result-card" aria-label="Prediction result">
+    <h2>Prediction Result</h2>
+    <table class="result-table" aria-label="Prediction details">
+      <caption>Asset: {{ result.asset_id }}</caption>
+      <tbody>
+        <tr>
+          <th scope="row">Anomaly Score</th>
+          <td>{{ result.anomaly_score | number:'1.4-4' }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Confidence Score</th>
+          <td>{{ result.confidence_score | number:'1.4-4' }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Alert</th>
+          <td>
+            <span
+              class="badge"
+              [ngClass]="result.alert ? 'badge-alert' : 'badge-ok'"
+              [attr.aria-label]="result.alert ? 'Alert: anomaly detected' : 'Status: OK'"
+            >
+              {{ result.alert ? 'ALERT' : 'OK' }}
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">Severity</th>
+          <td>{{ result.severity ?? '—' }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Explain Status</th>
+          <td>{{ result.explain_status }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Predicted At</th>
+          <td>{{ result.predicted_at }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Model Version</th>
+          <td>{{ result.model_version }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
