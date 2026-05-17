@@ -38,7 +38,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Conftest registers ops_models.* in sys.modules before this import.
-from ops_models.app.main import app, get_registry
+from ops_models.app.main import _build_persist_payload, app, get_registry
+from ops_models.app.schemas import PredictionResult
 
 
 # ---------------------------------------------------------------------------
@@ -292,3 +293,136 @@ def test_health_returns_200(client: TestClient) -> None:
     body = resp.json()
     assert body["status"] == "ok"
     assert body["service"] == "ops-models"
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — _persist_prediction_background sends correct envelope (TASK-018 fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_prediction_result(**overrides: Any) -> PredictionResult:
+    """Helper: build a minimal valid PredictionResult for envelope tests."""
+    from datetime import datetime, timezone
+    import uuid
+
+    base: dict[str, Any] = {
+        "prediction_id": str(uuid.uuid4()),
+        "asset_id": "PUMP-001",
+        "asset_class": "rotating_equipment",
+        "anomaly_score": 0.72,
+        "confidence_score": 0.85,
+        "alert": True,
+        "severity": "medium",
+        "predicted_at": datetime.now(tz=timezone.utc),
+        "model_version": "vibration-autoencoder-v1",
+        "explain_status": "pending",
+    }
+    base.update(overrides)
+    return PredictionResult(**base)
+
+
+class TestPersistPredictionEnvelope:
+    """Verify that _persist_prediction_background sends the correct
+    ``WritePredictionRequest`` envelope to ops-store (TASK-018 QA fix).
+
+    The ops-store ``POST /internal/predictions`` endpoint requires:
+
+        {"prediction": {...}, "audit_event": {...}}
+
+    The previous implementation sent a flat dict (result.model_dump()), which
+    broke ops-store persistence silently in production.
+    """
+
+    def test_payload_has_prediction_and_audit_event_keys(self) -> None:
+        """Envelope must contain top-level keys 'prediction' and 'audit_event'."""
+        result = _make_prediction_result()
+        payload = _build_persist_payload(result)
+
+        assert "prediction" in payload, "Envelope must have a 'prediction' key"
+        assert "audit_event" in payload, "Envelope must have an 'audit_event' key"
+
+    def test_audit_event_has_required_fields(self) -> None:
+        """audit_event must contain all fields required by ops-store audit_log."""
+        result = _make_prediction_result()
+        payload = _build_persist_payload(result)
+        audit_event = payload["audit_event"]
+
+        required_fields = {"id", "event_type", "prediction_id", "asset_id"}
+        for field in required_fields:
+            assert field in audit_event, f"audit_event is missing required field '{field}'"
+
+    def test_audit_event_event_type_is_prediction(self) -> None:
+        """event_type must be the literal string 'prediction'."""
+        result = _make_prediction_result()
+        payload = _build_persist_payload(result)
+
+        assert payload["audit_event"]["event_type"] == "prediction"
+
+    def test_audit_event_prediction_id_matches_result(self) -> None:
+        """audit_event.prediction_id must match the PredictionResult.prediction_id."""
+        result = _make_prediction_result()
+        payload = _build_persist_payload(result)
+
+        assert payload["audit_event"]["prediction_id"] == result.prediction_id
+
+    def test_audit_event_asset_id_matches_result(self) -> None:
+        """audit_event.asset_id must match the PredictionResult.asset_id."""
+        result = _make_prediction_result()
+        payload = _build_persist_payload(result)
+
+        assert payload["audit_event"]["asset_id"] == result.asset_id
+
+    def test_prediction_key_contains_prediction_id(self) -> None:
+        """prediction sub-dict must contain prediction_id (full PredictionResult)."""
+        result = _make_prediction_result()
+        payload = _build_persist_payload(result)
+
+        assert "prediction_id" in payload["prediction"]
+        assert payload["prediction"]["prediction_id"] == result.prediction_id
+
+    def test_httpx_post_called_with_envelope_payload(self, client: TestClient) -> None:
+        """Integration: httpx.post receives the correct envelope when predict is called."""
+        mock_registry = _make_mock_registry(active_model=_ACTIVE_MODEL)
+        _override_registry(mock_registry)
+
+        mock_runner_instance = MagicMock()
+        mock_runner_instance.run.return_value = {
+            "anomaly_score": 0.8,
+            "confidence_score": 0.9,
+        }
+
+        captured_payloads: list[Any] = []
+
+        class _FakeResponse:
+            status_code = 201
+
+        class _FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def post(self, url: str, *, json: Any = None, **_kwargs: Any) -> _FakeResponse:  # noqa: A002
+                captured_payloads.append(json)
+                return _FakeResponse()
+
+        with (
+            patch("ops_models.app.main.OnnxRunner", return_value=mock_runner_instance),
+            patch("ops_models.app.main.httpx.Client", return_value=_FakeClient()),
+        ):
+            resp = client.post("/internal/predict", json=_PREDICT_PAYLOAD)
+
+        assert resp.status_code == 200, resp.text
+
+        # BackgroundTask runs synchronously inside TestClient — payload must be captured.
+        assert len(captured_payloads) == 1, (
+            "httpx.Client.post should have been called exactly once by the background task"
+        )
+
+        sent = captured_payloads[0]
+        assert "prediction" in sent, f"Sent payload missing 'prediction' key: {sent}"
+        assert "audit_event" in sent, f"Sent payload missing 'audit_event' key: {sent}"
+        assert sent["audit_event"]["event_type"] == "prediction"
+        assert "prediction_id" in sent["audit_event"]
+        assert "asset_id" in sent["audit_event"]

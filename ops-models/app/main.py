@@ -167,12 +167,73 @@ def _calculate_severity(
     return None
 
 
-def _persist_prediction_background(payload: dict[str, Any]) -> None:
-    """Fire-and-forget: POST prediction dict to ops-store.
+def _build_persist_payload(result: PredictionResult) -> dict[str, Any]:
+    """Build the ``WritePredictionRequest`` envelope expected by ops-store.
 
+    ops-store ``POST /internal/predictions`` requires the envelope::
+
+        {
+            "prediction": { ...all PredictionResult fields... },
+            "audit_event": {
+                "id": "<uuid4>",
+                "event_type": "prediction",
+                "prediction_id": "...",
+                "asset_id": "...",
+                "model_version": "...",
+                "triggered_at": "<ISO 8601 UTC>",
+                "confidence_score": 0.8,
+                "trace_id": null,
+                "details": {"anomaly_score": 0.7, "alert": true, "severity": "medium"}
+            }
+        }
+
+    Parameters
+    ----------
+    result:
+        The ``PredictionResult`` returned by inference.
+
+    Returns
+    -------
+    dict
+        Ready-to-serialise payload matching ``WritePredictionRequest``.
+    """
+    prediction_dict = result.model_dump(mode="json")
+
+    audit_event: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "event_type": "prediction",
+        "prediction_id": result.prediction_id,
+        "asset_id": result.asset_id,
+        "model_version": result.model_version,
+        "triggered_at": datetime.now(timezone.utc).isoformat(),
+        "confidence_score": result.confidence_score,
+        "trace_id": None,
+        "details": {
+            "anomaly_score": result.anomaly_score,
+            "alert": result.alert,
+            "severity": result.severity,
+        },
+    }
+
+    return {"prediction": prediction_dict, "audit_event": audit_event}
+
+
+def _persist_prediction_background(result: PredictionResult) -> None:
+    """Fire-and-forget: POST prediction envelope to ops-store.
+
+    Builds the ``WritePredictionRequest`` envelope (``prediction`` + ``audit_event``)
+    required by ``POST /internal/predictions`` in ops-store and sends it.
     Failures are logged but do NOT surface to the caller (BackgroundTask).
+
+    Parameters
+    ----------
+    result:
+        The ``PredictionResult`` from inference.  The envelope is constructed
+        here (not in the request handler) so that ``audit_event.triggered_at``
+        reflects the actual persistence timestamp.
     """
     try:
+        payload = _build_persist_payload(result)
         with httpx.Client(timeout=5.0) as client:
             resp = client.post(
                 f"{_OPS_STORE_URL}/internal/predictions",
@@ -267,9 +328,11 @@ def predict(
     )
 
     # Step 6: fire-and-forget persistence.
+    # Pass the full PredictionResult object so _persist_prediction_background
+    # can build the WritePredictionRequest envelope (prediction + audit_event).
     background_tasks.add_task(
         _persist_prediction_background,
-        result.model_dump(mode="json"),
+        result,
     )
 
     _logger.info(
