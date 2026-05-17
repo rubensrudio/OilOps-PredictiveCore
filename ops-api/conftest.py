@@ -118,4 +118,19 @@ _register_module("ops_api.app.routers", _ROUTERS_DIR / "__init__.py")
 _register_module("ops_api.app.routers.telemetry", _ROUTERS_DIR / "telemetry.py")
 _register_module("ops_api.app.routers.predictions", _ROUTERS_DIR / "predictions.py")
 
+# Routers from sibling tasks -- guarded because they may be absent on this branch
+if (_ROUTERS_DIR / "explain.py").exists():
+    _register_module("ops_api.app.routers.explain", _ROUTERS_DIR / "explain.py")  # TASK-023
+if (_ROUTERS_DIR / "models.py").exists():
+    _register_module("ops_api.app.routers.models", _ROUTERS_DIR / "models.py")  # TASK-025
+
+# Router (TASK-026) -- aggregated health check
+_register_module("ops_api.app.routers.health", _ROUTERS_DIR / "health.py")
+
+# WebSocket manager and stream router (TASK-024) -- guarded
+if (_APP_DIR / "websocket_manager.py").exists():
+    _register_module("ops_api.app.websocket_manager", _APP_DIR / "websocket_manager.py")
+if (_ROUTERS_DIR / "stream.py").exists():
+    _register_module("ops_api.app.routers.stream", _ROUTERS_DIR / "stream.py")
+
 _register_module("ops_api.app.main", _APP_DIR / "main.py")
