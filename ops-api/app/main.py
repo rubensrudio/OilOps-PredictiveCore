@@ -6,10 +6,12 @@ FastAPI application entry-point for the ops-api public gateway service.
 This module wires together:
   - AdvisoryMiddleware  — injects ``X-Advisory-Only: true`` in every response
   - TracingMiddleware   — generates / propagates ``trace_id`` via ContextVar
+  - Routers registered for TASK-022:
+    - telemetry router  — POST /telemetry
+    - predictions router — GET /predictions/{asset_id}
 
-Routers (TASK-022 through TASK-027) are registered here via
-``app.include_router()`` once they are implemented.  The stubs below show
-where they will be added so that downstream tasks can merge without conflicts.
+Routers for TASK-023 through TASK-027 are registered here via
+``app.include_router()`` once they are implemented.
 
 IMPORTANT — RN-06 advisory notice
 ----------------------------------
@@ -23,6 +25,7 @@ personnel and certified safety systems.
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from ops_api.app.middleware.advisory import AdvisoryMiddleware
@@ -45,14 +48,37 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# Global exception handler — ensures X-Advisory-Only is present even on 500s
-# (The Starlette ServerErrorMiddleware bypasses ASGI middleware on unhandled
-# exceptions; adding an explicit handler here closes that gap.)
+# Exception handlers
 # ---------------------------------------------------------------------------
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Translate Pydantic/FastAPI 422 validation errors to HTTP 400.
+
+    External clients receive HTTP 400 (Bad Request) with the field-level
+    error details from Pydantic so they can understand which fields were
+    invalid (INIT-US-01 AC4, tasks.md TASK-022 design decision).
+
+    The X-Advisory-Only header is included so the middleware guarantee
+    (RN-06) holds on error responses too.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors()},
+        headers={_ADVISORY_HEADER: _ADVISORY_VALUE},
+    )
 
 
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all handler — ensures X-Advisory-Only is present even on 500s.
+
+    The Starlette ServerErrorMiddleware bypasses ASGI middleware on unhandled
+    exceptions; adding an explicit handler here closes that gap.
+    """
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"},
@@ -69,6 +95,16 @@ async def _global_exception_handler(request: Request, exc: Exception) -> JSONRes
 
 app.add_middleware(AdvisoryMiddleware)
 app.add_middleware(TracingMiddleware)
+
+# ---------------------------------------------------------------------------
+# Router registration (TASK-022)
+# ---------------------------------------------------------------------------
+
+from ops_api.app.routers.telemetry import router as _telemetry_router  # noqa: E402
+from ops_api.app.routers.predictions import router as _predictions_router  # noqa: E402
+
+app.include_router(_telemetry_router)
+app.include_router(_predictions_router)
 
 # ---------------------------------------------------------------------------
 # Root endpoint — advisory notice (RN-06)
