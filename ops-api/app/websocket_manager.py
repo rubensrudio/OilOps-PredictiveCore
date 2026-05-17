@@ -154,7 +154,11 @@ class WebSocketManager:
         if asset_id is None:
             _logger.warning(
                 "broadcast() called with prediction missing 'asset_id' — skipping",
-                extra={"event": "ws_broadcast_skip", "prediction": prediction},
+                extra={
+                    "event": "ws_broadcast_skip",
+                    "prediction_keys": list(prediction.keys()),
+                    "asset_id": prediction.get("asset_id"),
+                },
             )
             return
 

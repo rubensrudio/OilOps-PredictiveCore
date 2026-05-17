@@ -121,4 +121,8 @@ _register_module("ops_api.app.routers.predictions", _ROUTERS_DIR / "predictions.
 # Router (TASK-023) — explain router; no external schema imports needed
 _register_module("ops_api.app.routers.explain", _ROUTERS_DIR / "explain.py")
 
+# WebSocket manager and stream router (TASK-024)
+_register_module("ops_api.app.websocket_manager", _APP_DIR / "websocket_manager.py")
+_register_module("ops_api.app.routers.stream", _ROUTERS_DIR / "stream.py")
+
 _register_module("ops_api.app.main", _APP_DIR / "main.py")
