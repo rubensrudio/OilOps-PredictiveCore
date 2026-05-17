@@ -7,7 +7,7 @@ This module wires together:
   - AdvisoryMiddleware  — injects ``X-Advisory-Only: true`` in every response
   - TracingMiddleware   — generates / propagates ``trace_id`` via ContextVar
   - Routers registered for TASK-022:
-    - telemetry router  — POST /telemetry
+    - telemetry router   — POST /telemetry
     - predictions router — GET /predictions/{asset_id}
   - Router registered for TASK-023:
     - explain router — GET /explain/{prediction_id}
@@ -17,9 +17,12 @@ This module wires together:
     - models router — POST /models/deploy
   - Router registered for TASK-026:
     - health router — GET /health (fan-out to 5 dependent services)
+  - Routers registered for TASK-027:
+    - metrics router — GET /metrics (Prometheus text format)
+    - audit router   — GET /audit (paginated prediction audit log)
 
-Routers for TASK-027 are registered here via
-``app.include_router()`` once they are implemented.
+All eight routers are active: telemetry, predictions, explain, stream,
+models, health, metrics, audit.
 
 IMPORTANT — RN-06 advisory notice
 ----------------------------------
@@ -105,7 +108,13 @@ app.add_middleware(AdvisoryMiddleware)
 app.add_middleware(TracingMiddleware)
 
 # ---------------------------------------------------------------------------
-# Router registration (TASK-022 + TASK-023 + TASK-024 + TASK-025 + TASK-026)
+# Router registration
+# TASK-022: telemetry + predictions
+# TASK-023: explain
+# TASK-024: stream
+# TASK-025: models
+# TASK-026: health
+# TASK-027: metrics + audit
 # ---------------------------------------------------------------------------
 
 from ops_api.app.routers.telemetry import router as _telemetry_router  # noqa: E402
@@ -114,6 +123,8 @@ from ops_api.app.routers.explain import router as _explain_router  # noqa: E402
 from ops_api.app.routers.stream import router as _stream_router  # noqa: E402
 from ops_api.app.routers.models import router as _models_router  # noqa: E402
 from ops_api.app.routers.health import router as _health_router  # noqa: E402
+from ops_api.app.routers.metrics import router as _metrics_router  # noqa: E402
+from ops_api.app.routers.audit import router as _audit_router  # noqa: E402
 
 app.include_router(_telemetry_router)
 app.include_router(_predictions_router)
@@ -121,6 +132,8 @@ app.include_router(_explain_router)
 app.include_router(_stream_router)
 app.include_router(_models_router)
 app.include_router(_health_router)
+app.include_router(_metrics_router)
+app.include_router(_audit_router)
 
 # ---------------------------------------------------------------------------
 # Root endpoint — advisory notice (RN-06)
