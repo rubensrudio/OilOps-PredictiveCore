@@ -15,9 +15,10 @@ Behaviour
       log statements emitted within that request's async context.
    b. Injected as ``X-Trace-Id`` in the response headers so clients and
       downstream services can correlate logs.
-4. After the request completes the ContextVar is reset to its previous
-   value via the ``Token`` returned by :func:`set_trace_id`, ensuring clean
-   state for the next request even in shared-process scenarios.
+4. After the request completes the ContextVar is cleared via the public
+   :func:`shared.logging_config.clear_trace_id` function, restoring the
+   ``"n/a"`` sentinel and ensuring clean state for the next request even in
+   shared-process scenarios.
 
 The middleware depends only on ``shared/logging_config.py`` (already a
 project-level dependency from TASK-001) and the standard library ``uuid``
@@ -59,15 +60,15 @@ class TracingMiddleware(BaseHTTPMiddleware):
         # on sys.path (e.g. isolated unit tests that mock the import).
         from shared.logging_config import set_trace_id  # noqa: PLC0415
 
-        token = set_trace_id(trace_id)
+        set_trace_id(trace_id)
 
         try:
             response: Response = await call_next(request)  # type: ignore[arg-type]
         finally:
-            # Restore the previous ContextVar value regardless of errors.
-            from shared.logging_config import _trace_id_var  # noqa: PLC0415
+            # Reset the ContextVar to the "n/a" sentinel via the public API.
+            from shared.logging_config import clear_trace_id  # noqa: PLC0415
 
-            _trace_id_var.reset(token)
+            clear_trace_id()
 
         response.headers[_RESPONSE_HEADER] = trace_id
         return response
