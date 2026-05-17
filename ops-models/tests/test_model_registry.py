@@ -18,13 +18,21 @@ from ops_models.app.serving.model_registry import ModelRegistry
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _register(registry: ModelRegistry, asset_class: str, version: str) -> str:
+def _register(
+    registry: ModelRegistry,
+    asset_class: str,
+    version: str,
+    artifact_format: str = "onnx",
+    severity_thresholds: str = '{"low": 0.6, "medium": 0.75, "high": 0.9}',
+) -> str:
     """Helper to register a model and return its model_id."""
     return registry.register_model(
         asset_class=asset_class,
         version=version,
         artifact_path=f"/models/{asset_class}-{version}.onnx",
+        artifact_format=artifact_format,
         anomaly_threshold=0.5,
+        severity_thresholds=severity_thresholds,
     )
 
 
@@ -221,3 +229,103 @@ class TestListModels:
     ) -> None:
         result = registry.list_models("unknown_class")
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: severity_thresholds field (B2)
+# ---------------------------------------------------------------------------
+
+class TestSeverityThresholds:
+    def test_severity_thresholds_present_in_get_active_model(
+        self, registry: ModelRegistry
+    ) -> None:
+        """get_active_model() must include severity_thresholds in the returned dict (B2)."""
+        thresholds = '{"low": 0.6, "medium": 0.75, "high": 0.9}'
+        model_id = registry.register_model(
+            asset_class="rotating_equipment",
+            version="1.0.0",
+            artifact_path="/models/re-1.0.0.onnx",
+            artifact_format="onnx",
+            anomaly_threshold=0.5,
+            severity_thresholds=thresholds,
+        )
+        registry.activate_version(model_id)
+        active = registry.get_active_model("rotating_equipment")
+        assert active is not None
+        assert "severity_thresholds" in active
+        assert active["severity_thresholds"] == thresholds
+
+    def test_severity_thresholds_present_in_list_models(
+        self, registry: ModelRegistry
+    ) -> None:
+        """list_models() must include severity_thresholds in every returned dict (B2)."""
+        thresholds = '{"low": 0.5, "medium": 0.7, "high": 0.85}'
+        _register(
+            registry,
+            "pump",
+            "1.0.0",
+            severity_thresholds=thresholds,
+        )
+        models = registry.list_models("pump")
+        assert len(models) == 1
+        assert "severity_thresholds" in models[0]
+        assert models[0]["severity_thresholds"] == thresholds
+
+    def test_severity_thresholds_default_is_empty_json_object(
+        self, registry: ModelRegistry
+    ) -> None:
+        """severity_thresholds defaults to '{}' when not provided (B2)."""
+        model_id = registry.register_model(
+            asset_class="pump",
+            version="2.0.0",
+            artifact_path="/models/pump-2.0.0.onnx",
+            artifact_format="onnx",
+        )
+        registry.activate_version(model_id)
+        active = registry.get_active_model("pump")
+        assert active is not None
+        assert active["severity_thresholds"] == "{}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: artifact_format field (B3)
+# ---------------------------------------------------------------------------
+
+class TestArtifactFormat:
+    def test_artifact_format_present_in_get_active_model(
+        self, registry: ModelRegistry
+    ) -> None:
+        """get_active_model() must include artifact_format in the returned dict (B3)."""
+        model_id = registry.register_model(
+            asset_class="rotating_equipment",
+            version="3.0.0",
+            artifact_path="/models/re-3.0.0.onnx",
+            artifact_format="onnx",
+        )
+        registry.activate_version(model_id)
+        active = registry.get_active_model("rotating_equipment")
+        assert active is not None
+        assert "artifact_format" in active
+        assert active["artifact_format"] == "onnx"
+
+    def test_artifact_format_present_in_list_models(
+        self, registry: ModelRegistry
+    ) -> None:
+        """list_models() must include artifact_format in every returned dict (B3)."""
+        _register(registry, "pipeline", "1.0.0", artifact_format="tensorflow_savedmodel")
+        models = registry.list_models("pipeline")
+        assert len(models) == 1
+        assert "artifact_format" in models[0]
+        assert models[0]["artifact_format"] == "tensorflow_savedmodel"
+
+    def test_artifact_format_persisted_correctly(
+        self, registry: ModelRegistry
+    ) -> None:
+        """artifact_format value is stored and retrieved without modification (B3)."""
+        model_id = _register(
+            registry, "pump", "3.0.0", artifact_format="tensorflow_savedmodel"
+        )
+        registry.activate_version(model_id)
+        active = registry.get_active_model("pump")
+        assert active is not None
+        assert active["artifact_format"] == "tensorflow_savedmodel"

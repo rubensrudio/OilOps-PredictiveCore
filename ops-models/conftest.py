@@ -11,6 +11,7 @@ pytest.ini at the repository root MUST include ``addopts = --import-mode=importl
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 _SERVICE_ROOT = Path(__file__).parent
@@ -25,6 +26,14 @@ def _register_module(name: str, path: Path) -> None:
     sys.modules[name] = mod
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
+
+# Register ``ops_models`` as a namespace package first so that all
+# ``ops_models.*`` sub-module registrations below resolve the parent correctly.
+if "ops_models" not in sys.modules:
+    ns_pkg = types.ModuleType("ops_models")
+    ns_pkg.__path__ = [str(_SERVICE_ROOT)]  # type: ignore[assignment]
+    ns_pkg.__package__ = "ops_models"
+    sys.modules["ops_models"] = ns_pkg
 
 _register_module(
     "ops_models.app",

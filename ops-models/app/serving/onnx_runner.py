@@ -65,6 +65,16 @@ class OnnxRunner:
         ------
         ValueError
             If *features* is empty.
+
+        Notes
+        -----
+        **Single-output fallback:** if the ONNX model exposes only one output
+        tensor (``len(self._output_names) == 1``), the flattened tensor will
+        contain a single scalar value.  In that case ``confidence_score`` is
+        set equal to ``anomaly_score`` (i.e. ``flat[0]`` is used for both).
+        This is implemented via the expression
+        ``flat[1] if len(flat) > 1 else flat[0]``, so no code change is
+        needed when swapping between single- and dual-output model artefacts.
         """
         if features is None or len(features) == 0:
             raise ValueError("features must be a non-empty sequence of floats")

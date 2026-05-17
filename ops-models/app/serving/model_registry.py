@@ -8,14 +8,25 @@ Schema
 ------
 Table ``model_versions``:
 
-    model_id         TEXT PRIMARY KEY          -- UUID4
-    asset_class      TEXT NOT NULL
-    version          TEXT NOT NULL
-    artifact_path    TEXT NOT NULL
-    anomaly_threshold REAL NOT NULL DEFAULT 0.5
-    is_active        INTEGER NOT NULL DEFAULT 0
-    deployed_at      TEXT NOT NULL             -- ISO 8601 UTC
+    model_id            TEXT PRIMARY KEY          -- UUID4
+    asset_class         TEXT NOT NULL
+    version             TEXT NOT NULL
+    artifact_path       TEXT NOT NULL
+    artifact_format     TEXT NOT NULL             -- e.g. "onnx" / "tensorflow_savedmodel"
+    anomaly_threshold   REAL NOT NULL DEFAULT 0.5
+    severity_thresholds TEXT NOT NULL DEFAULT '{}' -- JSON: {"low": f, "medium": f, "high": f}
+    is_active           INTEGER NOT NULL DEFAULT 0
+    deployed_at         TEXT NOT NULL             -- ISO 8601 UTC
     UNIQUE(asset_class, version)
+
+Thread safety
+-------------
+``ModelRegistry`` wraps a single :class:`sqlite3.Connection` opened with
+``check_same_thread=False``.  SQLite itself serialises all writes via an
+exclusive write-lock; concurrent *reads* are safe across threads.  If the
+caller requires strict serialisation for concurrent writes from multiple
+threads, it should acquire an external ``threading.Lock`` around each
+write-path call (``register_model``, ``activate_version``).
 """
 
 from __future__ import annotations
@@ -31,13 +42,15 @@ _DDL = """
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS model_versions (
-    model_id          TEXT    NOT NULL PRIMARY KEY,
-    asset_class       TEXT    NOT NULL,
-    version           TEXT    NOT NULL,
-    artifact_path     TEXT    NOT NULL,
-    anomaly_threshold REAL    NOT NULL DEFAULT 0.5,
-    is_active         INTEGER NOT NULL DEFAULT 0,
-    deployed_at       TEXT    NOT NULL,
+    model_id            TEXT    NOT NULL PRIMARY KEY,
+    asset_class         TEXT    NOT NULL,
+    version             TEXT    NOT NULL,
+    artifact_path       TEXT    NOT NULL,
+    artifact_format     TEXT    NOT NULL,
+    anomaly_threshold   REAL    NOT NULL DEFAULT 0.5,
+    severity_thresholds TEXT    NOT NULL DEFAULT '{}',
+    is_active           INTEGER NOT NULL DEFAULT 0,
+    deployed_at         TEXT    NOT NULL,
     UNIQUE(asset_class, version)
 );
 """
@@ -74,7 +87,9 @@ class ModelRegistry:
         asset_class: str,
         version: str,
         artifact_path: str,
+        artifact_format: str,
         anomaly_threshold: float = 0.5,
+        severity_thresholds: str = "{}",
     ) -> str:
         """Register a new model version.
 
@@ -89,8 +104,17 @@ class ModelRegistry:
             Semantic version string (e.g. ``"1.0.0"``).
         artifact_path:
             Filesystem path (relative or absolute) to the ``.onnx`` artefact.
+        artifact_format:
+            Format of the model artefact.  Expected values:
+            ``"onnx"`` or ``"tensorflow_savedmodel"``.  TASK-018 uses this
+            field to reject unsupported formats (HTTP 422) before loading.
         anomaly_threshold:
             Score threshold above which an anomaly alert is raised.
+        severity_thresholds:
+            JSON string encoding the severity band boundaries, e.g.
+            ``'{"low": 0.6, "medium": 0.75, "high": 0.9}'``.  TASK-018 reads
+            this field from :meth:`get_active_model` to derive the ``severity``
+            field of ``PredictionResult``.
 
         Returns
         -------
@@ -109,11 +133,20 @@ class ModelRegistry:
             """
             INSERT INTO model_versions
                 (model_id, asset_class, version, artifact_path,
-                 anomaly_threshold, is_active, deployed_at)
-            VALUES (?, ?, ?, ?, ?, 0, ?)
+                 artifact_format, anomaly_threshold, severity_thresholds,
+                 is_active, deployed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
-            (model_id, asset_class, version, artifact_path,
-             anomaly_threshold, deployed_at),
+            (
+                model_id,
+                asset_class,
+                version,
+                artifact_path,
+                artifact_format,
+                anomaly_threshold,
+                severity_thresholds,
+                deployed_at,
+            ),
         )
         self._conn.commit()
         return model_id
