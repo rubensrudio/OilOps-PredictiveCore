@@ -1,0 +1,12 @@
+# ops-reference/requirements.txt
+# Dependencies for the training pipeline (TASK-029).
+# These packages are only required during model training (ops-reference),
+# NOT at inference time (ops-models uses only onnxruntime).
+
+numpy>=1.26
+scipy>=1.13
+scikit-learn>=1.4
+onnx>=1.16
+onnxruntime>=1.18
+pytest>=8.0
+pytest-cov>=5.0

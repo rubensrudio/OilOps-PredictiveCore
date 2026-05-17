@@ -13,11 +13,23 @@ Overview
 3. Train autoencoder: implemented as a PCA-based reconstruction autoencoder
    using sklearn (no TensorFlow required).  Architecture mirrors the spec:
    Dense(input_dim) → latent(32 → 16) → Dense(input_dim).
-4. Export model: saves model in ONNX format if skl2onnx is available;
-   otherwise serialises a pickle wrapper that exposes an
-   ``InferenceSession``-compatible interface (``run()`` method).
+4. Export model: saves model as ONNX using ``onnx.helper`` to build the
+   computation graph directly — no ``skl2onnx`` required.
+
+   ONNX graph contract (required by ops-models OnnxRunner):
+     Input  : ``input``       float32, shape (batch, n_features)
+     Output : ``anomaly_score`` float32, shape (batch,)
+   The graph implements:
+     x_scaled = (input - scaler_mean) / scaler_scale          # StandardScaler
+     x_latent = x_scaled @ pca_components.T                   # PCA transform
+     x_recon  = x_latent @ pca_components + pca_mean          # PCA inverse
+     mse      = mean((x_scaled - x_recon)^2, axis=features)   # reconstruction error
+     anomaly_score = sigmoid(mse)                              # normalised to [0,1]
+
 5. Save metrics: writes vibration_autoencoder_v1_metrics.json with
    ``precision``, ``recall``, ``f1`` calculated on the hold-out set.
+   ``dataset`` field is ``"synthetic"`` when no real CSV data is found,
+   or ``"cwru_sample"`` when CWRU CSV files are loaded.
 
 Constants
 ---------
@@ -44,7 +56,6 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
 import sys
 import time
 from pathlib import Path
@@ -116,7 +127,6 @@ def _try_import_vibration_extractor():
     Returns the class if importable, else None.
     """
     try:
-        # TASK-013 placed the extractor in ops-feature/app/extractors/vibration.py
         extractor_path = _REPO_ROOT / "ops-feature" / "app" / "extractors" / "vibration.py"
         if not extractor_path.exists():
             return None
@@ -304,7 +314,7 @@ def _load_csv_dataset(
 def load_dataset(
     datasets_dir: Optional[str],
     fft_bins: int = _N_FFT_BINS,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, str]:
     """
     Load the vibration dataset.
 
@@ -315,6 +325,7 @@ def load_dataset(
     -------
     X : np.ndarray, shape (n_samples, FEATURE_DIM)
     y : np.ndarray, shape (n_samples,)
+    dataset_name : str — ``"cwru_sample"`` or ``"synthetic"``
     """
     extractor_cls = _try_import_vibration_extractor()
 
@@ -326,15 +337,19 @@ def load_dataset(
                 _logger.info(
                     "Loaded %d samples from CSV files in %s.", len(X), ddir
                 )
-                return X, y
+                return X, y, "cwru_sample"
             _logger.warning(
                 "No valid CSV data found in %s — falling back to synthetic dataset.",
                 ddir,
             )
 
-    _logger.info("Generating synthetic dataset (%d normal + %d anomalous).",
-                 _N_NORMAL_SAMPLES, _N_ANOMALY_SAMPLES)
-    return generate_synthetic_dataset(fft_bins=fft_bins)
+    _logger.info(
+        "Generating synthetic dataset (%d normal + %d anomalous).",
+        _N_NORMAL_SAMPLES,
+        _N_ANOMALY_SAMPLES,
+    )
+    X, y = generate_synthetic_dataset(fft_bins=fft_bins)
+    return X, y, "synthetic"
 
 
 # ===========================================================================
@@ -354,16 +369,17 @@ class _PCAAutoencoder:
 
     Anomaly score
     -------------
-    Score is the sigmoid-normalised mean squared reconstruction error,
-    clipped to [0.0, 1.0].  Threshold for binary classification is derived
-    from the ``_ANOMALY_PERCENTILE`` of training reconstruction errors.
+    Score is the sigmoid of the mean squared reconstruction error
+    (in scaled space), clipped to [0.0, 1.0].  Threshold for binary
+    classification is derived from the ``_ANOMALY_PERCENTILE`` of
+    training reconstruction errors (in MSE space, pre-sigmoid).
     """
 
     def __init__(self, n_components: int = _LATENT_DIM_INNER) -> None:
         self._scaler = StandardScaler()
         self._pca = PCA(n_components=n_components, random_state=_SEED)
         self._threshold: float = 0.5
-        self._max_error: float = 1.0  # used for sigmoid-like normalisation
+        self._n_components = n_components
 
     # ------------------------------------------------------------------
     # Training
@@ -381,47 +397,53 @@ class _PCAAutoencoder:
         X_scaled = self._scaler.fit_transform(X_normal)
         self._pca.fit(X_scaled)
 
-        # Determine anomaly threshold: 95th percentile of training errors
-        errors = self._reconstruction_errors(X_normal)
-        self._threshold = float(np.percentile(errors, _ANOMALY_PERCENTILE))
-        # Store maximum error from training for normalisation
-        self._max_error = float(np.max(errors)) if len(errors) > 0 else 1.0
-        if self._max_error == 0.0:
-            self._max_error = 1.0
+        # Determine anomaly threshold in sigmoid-score space:
+        # use 95th percentile of training anomaly scores.
+        train_scores = self._batch_scores(X_normal)
+        self._threshold = float(np.percentile(train_scores, _ANOMALY_PERCENTILE))
 
         _logger.info(
-            "PCAAutoencoder fitted. Threshold=%.6f, max_error=%.6f",
+            "PCAAutoencoder fitted. n_components=%d, threshold(sigmoid)=%.6f",
+            self._n_components,
             self._threshold,
-            self._max_error,
         )
         return self
 
     # ------------------------------------------------------------------
-    # Inference
+    # Inference helpers
     # ------------------------------------------------------------------
 
-    def _reconstruction_error(self, x: np.ndarray) -> float:
-        """Mean squared reconstruction error for a single sample."""
-        x2d = x.reshape(1, -1)
-        x_scaled = self._scaler.transform(x2d)
-        x_latent = self._pca.transform(x_scaled)
-        x_reconstructed = self._pca.inverse_transform(x_latent)
-        return float(np.mean((x_scaled - x_reconstructed) ** 2))
+    def _reconstruction_mse(self, X: np.ndarray) -> np.ndarray:
+        """
+        Mean squared reconstruction error in scaled space for each sample.
 
-    def _reconstruction_errors(self, X: np.ndarray) -> np.ndarray:
-        """Vectorised reconstruction errors for a batch."""
+        Parameters
+        ----------
+        X : shape (n, feature_dim) — raw (un-scaled) features.
+
+        Returns
+        -------
+        np.ndarray shape (n,), dtype float64.
+        """
         X_scaled = self._scaler.transform(X)
         X_latent = self._pca.transform(X_scaled)
         X_reconstructed = self._pca.inverse_transform(X_latent)
         return np.mean((X_scaled - X_reconstructed) ** 2, axis=1)
 
+    def _batch_scores(self, X: np.ndarray) -> np.ndarray:
+        """
+        Sigmoid-normalised anomaly scores for a batch.
+
+        Returns
+        -------
+        np.ndarray shape (n,), dtype float64, values in (0, 1).
+        """
+        mse = self._reconstruction_mse(X)
+        return 1.0 / (1.0 + np.exp(-mse))  # sigmoid
+
     def score(self, x: np.ndarray) -> float:
         """
         Return an anomaly score in [0.0, 1.0] for a single feature vector.
-
-        The score is the reconstruction error normalised against the maximum
-        training error, then clipped to [0.0, 1.0].  Higher scores indicate
-        higher likelihood of anomaly.
 
         Parameters
         ----------
@@ -431,9 +453,8 @@ class _PCAAutoencoder:
         -------
         float in [0.0, 1.0]
         """
-        err = self._reconstruction_error(x)
-        normalised = err / self._max_error
-        return float(np.clip(normalised, 0.0, 1.0))
+        scores = self._batch_scores(x.reshape(1, -1))
+        return float(np.clip(scores[0], 0.0, 1.0))
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -443,8 +464,8 @@ class _PCAAutoencoder:
         -------
         np.ndarray of int (0 = normal, 1 = anomaly), shape (n,).
         """
-        errors = self._reconstruction_errors(X)
-        return (errors > self._threshold).astype(np.int32)
+        scores = self._batch_scores(X)
+        return (scores >= self._threshold).astype(np.int32)
 
     # ------------------------------------------------------------------
     # ONNX-Runtime-compatible interface (onnxruntime.InferenceSession shim)
@@ -466,86 +487,214 @@ class _PCAAutoencoder:
 
         Returns
         -------
-        [np.ndarray]: list with one element — reconstruction errors,
-                      shape (batch,), dtype float32.
+        [np.ndarray]: list with one element — anomaly_score,
+                      shape (batch,), dtype float32, values in [0,1].
         """
         x = next(iter(input_feed.values()))
         if x.ndim == 1:
             x = x.reshape(1, -1)
-        errors = self._reconstruction_errors(x.astype(np.float64))
-        # Normalise to [0, 1]
-        scores = np.clip(errors / self._max_error, 0.0, 1.0).astype(np.float32)
-        return [scores]
+        scores = self._batch_scores(x.astype(np.float64))
+        return [np.clip(scores, 0.0, 1.0).astype(np.float32)]
 
 
 # ===========================================================================
-# ONNX export
+# ONNX export — built directly with onnx.helper (no skl2onnx dependency)
 # ===========================================================================
 
-def _try_export_onnx(
+def _export_onnx(
     model: _PCAAutoencoder,
     output_path: Path,
-    feature_dim: int = FEATURE_DIM,
-) -> bool:
+    feature_dim: int,
+) -> None:
     """
-    Attempt to export the model to ONNX using skl2onnx.
+    Export the fitted _PCAAutoencoder to ONNX format.
 
-    Returns True on success, False if skl2onnx is not available.
+    The resulting ONNX graph satisfies the ops-models OnnxRunner contract:
+      - Input  : ``input``         float32, shape (batch, feature_dim)
+      - Output : ``anomaly_score`` float32, shape (batch,)
+
+    Graph topology:
+      x_scaled = (input - scaler_mean) / scaler_scale
+      x_latent = x_scaled @ pca_components.T
+      x_recon  = x_latent @ pca_components + pca_mean_scaled
+      mse      = mean((x_scaled - x_recon)^2, axis=1)
+      anomaly_score = sigmoid(mse)
+
+    Parameters
+    ----------
+    model : fitted _PCAAutoencoder instance.
+    output_path : destination .onnx file path.
+    feature_dim : number of input features (FEATURE_DIM).
     """
     try:
-        from skl2onnx import convert_sklearn
-        from skl2onnx.common.data_types import FloatTensorType
+        import onnx
+        import onnx.helper as _h
+        import onnx.numpy_helper as _nph
+        from onnx import TensorProto
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'onnx' package is required for ONNX export. "
+            "Install it with: pip install onnx"
+        ) from exc
 
-        _logger.info("Exporting model to ONNX via skl2onnx...")
+    # ------------------------------------------------------------------
+    # Extract fitted parameters from sklearn objects (float32 for ONNX)
+    # ------------------------------------------------------------------
+    scaler_mean = model._scaler.mean_.astype(np.float32)       # shape (feature_dim,)
+    scaler_scale = model._scaler.scale_.astype(np.float32)     # shape (feature_dim,)
+    pca_components = model._pca.components_.astype(np.float32) # shape (n_components, feature_dim)
+    # PCA mean in the *scaled* space (zero after StandardScaler, but kept for
+    # correctness when pca.mean_ is non-zero due to sklearn internals)
+    pca_mean_scaled = model._pca.mean_.astype(np.float32)      # shape (feature_dim,)
 
-        # skl2onnx converts the PCA pipeline only (scaler + pca transform).
-        # We wrap both into an sklearn Pipeline for export.
-        from sklearn.pipeline import Pipeline as _SKPipeline
+    n_components, _feat = pca_components.shape
+    assert _feat == feature_dim, (
+        f"PCA components shape mismatch: expected feature_dim={feature_dim}, "
+        f"got {_feat}"
+    )
 
-        pipe = _SKPipeline([
-            ("scaler", model._scaler),
-            ("pca", model._pca),
-        ])
+    # Reshape to (1, feature_dim) for broadcasting over batch dimension
+    scaler_mean_2d = scaler_mean.reshape(1, feature_dim)
+    scaler_scale_2d = scaler_scale.reshape(1, feature_dim)
+    pca_mean_2d = pca_mean_scaled.reshape(1, feature_dim)
+    pca_components_T = pca_components.T.copy()  # (feature_dim, n_components)
 
-        initial_type = [("float_input", FloatTensorType([None, feature_dim]))]
-        onnx_model = convert_sklearn(pipe, initial_types=initial_type)
+    # ------------------------------------------------------------------
+    # Build initializers (constant tensors embedded in the graph)
+    # ------------------------------------------------------------------
+    initializers = [
+        _nph.from_array(scaler_mean_2d, name="scaler_mean"),
+        _nph.from_array(scaler_scale_2d, name="scaler_scale"),
+        _nph.from_array(pca_components, name="pca_components"),
+        _nph.from_array(pca_components_T, name="pca_components_T"),
+        _nph.from_array(pca_mean_2d, name="pca_mean_scaled"),
+        # Axes tensor for ReduceMean (opset 18 requires axes as input)
+        _nph.from_array(np.array([1], dtype=np.int64), name="reduce_axes"),
+        # Exponent for Pow node
+        _nph.from_array(np.array([2.0], dtype=np.float32), name="pow_exp"),
+    ]
 
-        with open(output_path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
+    # ------------------------------------------------------------------
+    # Build computation nodes
+    # ------------------------------------------------------------------
+    nodes = [
+        # 1. Standardize: x_scaled = (input - scaler_mean) / scaler_scale
+        _h.make_node("Sub", ["input", "scaler_mean"], ["x_centered"], name="sub_mean"),
+        _h.make_node("Div", ["x_centered", "scaler_scale"], ["x_scaled"], name="div_scale"),
 
-        _logger.info("ONNX model saved to %s", output_path)
-        return True
+        # 2. PCA forward transform: x_latent = x_scaled @ pca_components.T
+        #    x_scaled: (batch, feature_dim) × pca_components_T: (feature_dim, n_components)
+        #    → x_latent: (batch, n_components)
+        _h.make_node("MatMul", ["x_scaled", "pca_components_T"], ["x_latent"], name="pca_forward"),
 
-    except ImportError:
-        _logger.info(
-            "skl2onnx not available — skipping ONNX export. "
-            "Model will be saved as pickle with InferenceSession-compatible interface."
-        )
-        return False
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning("ONNX export failed: %s — falling back to pickle.", exc)
-        return False
+        # 3. PCA inverse transform: x_recon = x_latent @ pca_components + pca_mean_scaled
+        #    x_latent: (batch, n_components) × pca_components: (n_components, feature_dim)
+        #    → x_recon_centered: (batch, feature_dim)
+        _h.make_node("MatMul", ["x_latent", "pca_components"], ["x_recon_centered"], name="pca_inverse"),
+        _h.make_node("Add", ["x_recon_centered", "pca_mean_scaled"], ["x_reconstructed"], name="add_pca_mean"),
+
+        # 4. Reconstruction error: diff = x_scaled - x_reconstructed
+        _h.make_node("Sub", ["x_scaled", "x_reconstructed"], ["diff"], name="sub_recon"),
+
+        # 5. Squared error: diff_sq = diff ^ 2
+        _h.make_node("Pow", ["diff", "pow_exp"], ["diff_sq"], name="pow_2"),
+
+        # 6. Mean over feature dimension → MSE per sample shape (batch,)
+        #    Using opset-18 style: axes is an input tensor
+        _h.make_node("ReduceMean", ["diff_sq", "reduce_axes"], ["mse"],
+                     name="reduce_mean_features", keepdims=0),
+
+        # 7. Sigmoid to map MSE → anomaly_score in (0, 1)
+        _h.make_node("Sigmoid", ["mse"], ["anomaly_score"], name="sigmoid"),
+    ]
+
+    # ------------------------------------------------------------------
+    # Build graph and model
+    # ------------------------------------------------------------------
+    input_def = _h.make_tensor_value_info("input", TensorProto.FLOAT, [None, feature_dim])
+    output_def = _h.make_tensor_value_info("anomaly_score", TensorProto.FLOAT, [None])
+
+    graph = _h.make_graph(
+        nodes,
+        "vibration_autoencoder_v1",
+        [input_def],
+        [output_def],
+        initializer=initializers,
+    )
+
+    model_proto = _h.make_model(
+        graph,
+        opset_imports=[_h.make_opsetid("", 18)],
+    )
+    model_proto.doc_string = (
+        "OilOps vibration anomaly autoencoder v1. "
+        "PCA reconstruction-based anomaly detection. "
+        "Output 'anomaly_score' is sigmoid(MSE) in (0,1). "
+        "ADVISORY: evaluation purposes only, NOT safety-rated."
+    )
+    model_proto.model_version = 1
+
+    # ------------------------------------------------------------------
+    # Validate graph with onnx checker
+    # ------------------------------------------------------------------
+    onnx.checker.check_model(model_proto)
+    _logger.info("ONNX graph validation passed.")
+
+    # ------------------------------------------------------------------
+    # Write to disk
+    # ------------------------------------------------------------------
+    output_path.write_bytes(model_proto.SerializeToString())
+    _logger.info("ONNX model saved to %s  (%d bytes)", output_path, output_path.stat().st_size)
 
 
-def _save_pickle(model: _PCAAutoencoder, output_path: Path) -> None:
+# ===========================================================================
+# ONNX model verification — run a smoke test after export
+# ===========================================================================
+
+def _verify_onnx(onnx_path: Path, feature_dim: int) -> None:
     """
-    Persist the model as a pickle file.
+    Load the exported ONNX model with onnxruntime and run a single forward
+    pass to confirm the artifact is valid and the output shape is correct.
 
-    Serialises a plain dict of sklearn components rather than the
-    ``_PCAAutoencoder`` class instance, which avoids the
-    ``_pickle.PicklingError`` that arises when the module is loaded via
-    ``importlib.util.spec_from_file_location`` (the loaded class has a
-    different identity from the one seen by pickle).
+    Raises
+    ------
+    RuntimeError : if onnxruntime is unavailable or validation fails.
+    AssertionError : if output shape is not (1,).
     """
-    payload = {
-        "scaler": model._scaler,
-        "pca": model._pca,
-        "threshold": model._threshold,
-        "max_error": model._max_error,
-    }
-    with open(output_path, "wb") as f:
-        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-    _logger.info("Model saved as pickle: %s", output_path)
+    try:
+        import onnxruntime as _ort
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'onnxruntime' package is required for ONNX verification. "
+            "Install it with: pip install onnxruntime"
+        ) from exc
+
+    opts = _ort.SessionOptions()
+    opts.log_severity_level = 3  # ERROR only
+
+    sess = _ort.InferenceSession(str(onnx_path), sess_options=opts)
+    input_name = sess.get_inputs()[0].name
+    output_name = sess.get_outputs()[0].name
+
+    dummy = np.random.randn(1, feature_dim).astype(np.float32)
+    result = sess.run(None, {input_name: dummy})
+
+    score = result[0]
+    assert score.shape == (1,), (
+        f"Expected anomaly_score shape (1,), got {score.shape}. "
+        "ONNX contract violation."
+    )
+    score_val = float(score[0])
+    assert 0.0 <= score_val <= 1.0, (
+        f"Expected sigmoid output in [0,1], got {score_val}."
+    )
+    _logger.info(
+        "ONNX verification OK — input_name=%r, output_name=%r, "
+        "test_score=%.6f",
+        input_name,
+        output_name,
+        float(score[0]),
+    )
 
 
 # ===========================================================================
@@ -555,102 +704,68 @@ def _save_pickle(model: _PCAAutoencoder, output_path: Path) -> None:
 class _ModelWrapper:
     """
     Unified model wrapper that exposes a ``score(vector) -> float`` method
-    regardless of whether the underlying artifact is ONNX or pickle.
+    regardless of whether the underlying artifact is ONNX or the in-memory
+    _PCAAutoencoder instance (used in tests when the pipeline runs in-process).
     """
 
-    def __init__(self, inner: Any, threshold: float, max_error: float) -> None:
+    def __init__(self, inner: Any, feature_dim: int) -> None:
         self._inner = inner
-        self._threshold = threshold
-        self._max_error = max_error
+        self._feature_dim = feature_dim
 
     def score(self, x: np.ndarray) -> float:
         """
         Return anomaly score in [0.0, 1.0] for a single feature vector.
         """
-        x = np.asarray(x, dtype=np.float32).reshape(1, -1)
-        result = self._inner.run(None, {"float_input": x})
-        # result[0] is shape (1,) float32 for ONNX; or shape (1,) for pickle shim
-        raw = float(result[0][0])
-        return float(np.clip(raw, 0.0, 1.0))
+        x32 = np.asarray(x, dtype=np.float32).reshape(1, self._feature_dim)
+        input_name = self._inner.get_inputs()[0].name
+        result = self._inner.run(None, {input_name: x32})
+        return float(np.clip(result[0][0], 0.0, 1.0))
 
 
 def load_model(models_dir: str = str(_DEFAULT_MODELS_DIR)) -> _ModelWrapper:
     """
-    Load the trained model from ``models_dir``.
+    Load the trained ONNX model from ``models_dir``.
 
-    Prefers the ONNX artifact if present (``vibration_autoencoder_v1.onnx``);
-    falls back to the pickle file (``vibration_autoencoder_v1.pkl``).
+    Parameters
+    ----------
+    models_dir : directory containing ``vibration_autoencoder_v1.onnx``.
 
     Returns
     -------
     _ModelWrapper with ``score(vector) -> float`` method.
+
+    Raises
+    ------
+    FileNotFoundError : if no ONNX artifact is found.
     """
-    mdir = Path(models_dir)
-
-    onnx_path = mdir / f"{_MODEL_FILENAME}.onnx"
-    pkl_path = mdir / f"{_MODEL_FILENAME}.pkl"
-
-    if onnx_path.exists():
-        _logger.info("Loading ONNX model from %s", onnx_path)
+    try:
         import onnxruntime as _ort
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'onnxruntime' package is required. "
+            "Install it with: pip install onnxruntime"
+        ) from exc
 
-        # Suppress ONNX Runtime verbose logging
-        sess_opts = _ort.SessionOptions()
-        sess_opts.log_severity_level = 3  # ERROR only
+    mdir = Path(models_dir)
+    onnx_path = mdir / f"{_MODEL_FILENAME}.onnx"
 
-        session = _ort.InferenceSession(str(onnx_path), sess_options=sess_opts)
+    if not onnx_path.exists():
+        raise FileNotFoundError(
+            f"ONNX model not found: {onnx_path}. "
+            "Run train_vibration_autoencoder.py first."
+        )
 
-        # ONNX session does not expose threshold/max_error — use defaults.
-        # For the wrapper we need an object with .run() — use InferenceSession.
-        # But InferenceSession input name may differ from "float_input".
-        input_name = session.get_inputs()[0].name
+    opts = _ort.SessionOptions()
+    opts.log_severity_level = 3
 
-        class _OnnxAdapter:
-            """Adapts InferenceSession to the expected run() signature."""
+    session = _ort.InferenceSession(str(onnx_path), sess_options=opts)
 
-            def __init__(self, sess: Any, inp_name: str) -> None:
-                self._sess = sess
-                self._inp_name = inp_name
+    # Determine feature_dim from the model's input shape
+    input_info = session.get_inputs()[0]
+    feature_dim = input_info.shape[1] if len(input_info.shape) > 1 else FEATURE_DIM
 
-            def run(
-                self,
-                output_names: Optional[List[str]],
-                input_feed: Dict[str, np.ndarray],
-            ) -> List[np.ndarray]:
-                x = next(iter(input_feed.values()))
-                return self._sess.run(output_names, {self._inp_name: x})
-
-        # Load threshold and max_error from metrics JSON if available
-        metrics_path = mdir / _METRICS_FILENAME
-        threshold = 0.5
-        max_error = 1.0
-        if metrics_path.exists():
-            meta = json.loads(metrics_path.read_text(encoding="utf-8"))
-            threshold = float(meta.get("anomaly_threshold", 0.5))
-            max_error = float(meta.get("max_reconstruction_error", 1.0))
-
-        adapter = _OnnxAdapter(session, input_name)
-        return _ModelWrapper(adapter, threshold=threshold, max_error=max_error)
-
-    if pkl_path.exists():
-        _logger.info("Loading pickle model from %s", pkl_path)
-        with open(pkl_path, "rb") as f:
-            payload = pickle.load(f)
-
-        # Reconstruct a _PCAAutoencoder from the serialised dict payload
-        # (avoids class-identity issues when loaded via importlib).
-        autoenc = _PCAAutoencoder.__new__(_PCAAutoencoder)
-        autoenc._scaler = payload["scaler"]
-        autoenc._pca = payload["pca"]
-        autoenc._threshold = payload["threshold"]
-        autoenc._max_error = payload["max_error"]
-        return _ModelWrapper(autoenc, threshold=autoenc._threshold, max_error=autoenc._max_error)
-
-    raise FileNotFoundError(
-        f"No model artifact found in {mdir}. "
-        f"Expected: {onnx_path} or {pkl_path}. "
-        "Run train_vibration_autoencoder.py first."
-    )
+    _logger.info("ONNX model loaded from %s (feature_dim=%d)", onnx_path, feature_dim)
+    return _ModelWrapper(session, feature_dim=feature_dim)
 
 
 # ===========================================================================
@@ -671,16 +786,9 @@ def compute_metrics(
     """
     y_pred = model.predict(X_test)
 
-    # Guard: if all predictions are the same class, sklearn metrics may warn.
-    precision = float(
-        precision_score(y_test, y_pred, zero_division=0)
-    )
-    recall = float(
-        recall_score(y_test, y_pred, zero_division=0)
-    )
-    f1 = float(
-        f1_score(y_test, y_pred, zero_division=0)
-    )
+    precision = float(precision_score(y_test, y_pred, zero_division=0))
+    recall = float(recall_score(y_test, y_pred, zero_division=0))
+    f1 = float(f1_score(y_test, y_pred, zero_division=0))
 
     return {"precision": precision, "recall": recall, "f1": f1}
 
@@ -705,8 +813,9 @@ def run_pipeline(
     2. Split into train / test sets (stratified by label).
     3. Train PCAAutoencoder on normal samples only (semi-supervised).
     4. Evaluate on the full test set.
-    5. Export model (ONNX if skl2onnx available, else pickle).
-    6. Save metrics JSON.
+    5. Export model to ONNX (using onnx.helper — no skl2onnx required).
+    6. Verify the exported ONNX artifact with onnxruntime.
+    7. Save metrics JSON.
 
     Parameters
     ----------
@@ -734,8 +843,13 @@ def run_pipeline(
     # ------------------------------------------------------------------
     # 1. Load data
     # ------------------------------------------------------------------
-    X, y = load_dataset(datasets_dir=datasets_dir, fft_bins=fft_bins)
-    _logger.info("Dataset loaded: %d samples, %d features.", X.shape[0], X.shape[1])
+    X, y, dataset_name = load_dataset(datasets_dir=datasets_dir, fft_bins=fft_bins)
+    _logger.info(
+        "Dataset loaded: %d samples, %d features. Source: %s",
+        X.shape[0],
+        X.shape[1],
+        dataset_name,
+    )
 
     # ------------------------------------------------------------------
     # 2. Stratified train/test split
@@ -780,33 +894,36 @@ def run_pipeline(
     )
 
     # ------------------------------------------------------------------
-    # 5. Export model
+    # 5. Export model to ONNX
     # ------------------------------------------------------------------
     out_dir = Path(models_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     onnx_path = out_dir / f"{_MODEL_FILENAME}.onnx"
-    pkl_path = out_dir / f"{_MODEL_FILENAME}.pkl"
+    feature_dim = int(X.shape[1])
 
-    exported_onnx = _try_export_onnx(autoencoder, onnx_path, feature_dim=X.shape[1])
-    if not exported_onnx:
-        _save_pickle(autoencoder, pkl_path)
-        model_path = str(pkl_path)
-    else:
-        model_path = str(onnx_path)
+    _export_onnx(autoencoder, onnx_path, feature_dim=feature_dim)
 
     # ------------------------------------------------------------------
-    # 6. Save metrics JSON
+    # 6. Verify the ONNX artifact
+    # ------------------------------------------------------------------
+    _verify_onnx(onnx_path, feature_dim=feature_dim)
+
+    model_path = str(onnx_path)
+
+    # ------------------------------------------------------------------
+    # 7. Save metrics JSON
     # ------------------------------------------------------------------
     metrics_full = {
         **metrics,
         "anomaly_threshold": autoencoder._threshold,
-        "max_reconstruction_error": autoencoder._max_error,
         "n_components": n_components,
-        "feature_dim": X.shape[1],
+        "feature_dim": feature_dim,
         "n_train_normal": len(X_train_normal),
         "n_test": len(X_test),
-        "dataset": "synthetic" if datasets_dir is None else "cwru_sample",
+        # dataset reflects the actual data source: "cwru_sample" if CSV files
+        # were loaded from datasets_dir, "synthetic" if generated programmatically.
+        "dataset": dataset_name,
         "model_id": "vibration-autoencoder-v1",
         "version": "1.0.0",
         "asset_class": "rotating_equipment",
