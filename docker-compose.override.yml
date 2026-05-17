@@ -1,0 +1,194 @@
+# =============================================================================
+# docker-compose.override.yml — OilOps-PredictiveCore overrides de desenvolvimento
+# =============================================================================
+#
+# Este arquivo é aplicado automaticamente pelo Docker Compose sobre
+# docker-compose.yml quando você executa `docker compose up` no ambiente de
+# desenvolvimento local. Em produção/CI, execute com:
+#   docker compose -f docker-compose.yml up
+#
+# Overrides incluídos:
+#   1. Bind mounts de código-fonte para hot-reload via uvicorn --reload
+#   2. Portas extras expostas para acesso direto a serviços internos (debug)
+#   3. Variáveis de ambiente de debug (log level, reload, etc.)
+#   4. Volume mount do ops-reference/datasets para treinar modelos localmente
+#
+# NOTA: Em dev, o uvicorn é iniciado com --reload. O entrypoint.sh do
+#       ops-models é preservado para o init automático do modelo, mas o
+#       comando de start é substituído para incluir --reload após o init.
+# =============================================================================
+
+name: oilops
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # ops-store — override dev
+  # ---------------------------------------------------------------------------
+  ops-store:
+    environment:
+      LOG_LEVEL: DEBUG
+      OILOPS_DATA_DIR: /data
+    ports:
+      # Porta interna exposta ao host para debug e curl direto
+      - "8002:8002"
+    volumes:
+      # Bind mount do código-fonte para hot-reload
+      - ./ops-store:/app/ops_store_src
+      - ./ops_store:/app/ops_store
+      - ./shared:/app/shared
+    command:
+      - uvicorn
+      - ops_store.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8002"
+      - --reload
+      - --reload-dir
+      - /app/ops_store
+      - --reload-dir
+      - /app/shared
+
+  # ---------------------------------------------------------------------------
+  # ops-ingest — override dev
+  # ---------------------------------------------------------------------------
+  ops-ingest:
+    environment:
+      LOG_LEVEL: DEBUG
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ops-ingest:/app/ops_ingest_src
+      - ./ops_ingest:/app/ops_ingest
+      - ./shared:/app/shared
+    command:
+      - uvicorn
+      - ops_ingest.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8001"
+      - --reload
+      - --reload-dir
+      - /app/ops_ingest
+      - --reload-dir
+      - /app/shared
+
+  # ---------------------------------------------------------------------------
+  # ops-feature — override dev
+  # ---------------------------------------------------------------------------
+  ops-feature:
+    environment:
+      LOG_LEVEL: DEBUG
+      POLL_INTERVAL_SECONDS: "10"
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./ops-feature:/app/ops_feature
+      - ./shared:/app/shared
+    command:
+      - uvicorn
+      - ops_feature.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8003"
+      - --reload
+      - --reload-dir
+      - /app/ops_feature
+      - --reload-dir
+      - /app/shared
+
+  # ---------------------------------------------------------------------------
+  # ops-models — override dev
+  # Em dev o entrypoint.sh ainda roda o init do modelo, mas o uvicorn é
+  # iniciado com --reload para refletir mudanças de código em tempo real.
+  # ---------------------------------------------------------------------------
+  ops-models:
+    environment:
+      LOG_LEVEL: DEBUG
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./ops-models:/app/ops_models
+      - ./shared:/app/shared
+      # Acesso de leitura/escrita ao ops-reference em dev para facilitar
+      # experimentação com modelos locais
+      - ./ops-reference:/ops-reference
+    # Override do entrypoint para iniciar com --reload após o init
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        DATA_DIR="${OILOPS_DATA_DIR:-/data}"
+        MODELS_DIR="${OPS_MODELS_DIR:-/models}"
+        REFERENCE_MODELS_DIR="${OPS_REFERENCE_MODELS:-/ops-reference/models}"
+        ONNX_SRC="${REFERENCE_MODELS_DIR}/vibration_autoencoder_v1.onnx"
+        ONNX_DST="${MODELS_DIR}/vibration_autoencoder_v1.onnx"
+        mkdir -p "${MODELS_DIR}"
+        if [ -f "${ONNX_SRC}" ] && [ ! -f "${ONNX_DST}" ]; then
+          cp "${ONNX_SRC}" "${ONNX_DST}"
+        fi
+        exec uvicorn ops_models.app.main:app \
+          --host 0.0.0.0 --port 8004 \
+          --reload --reload-dir /app/ops_models --reload-dir /app/shared
+
+  # ---------------------------------------------------------------------------
+  # ops-explain — override dev
+  # ---------------------------------------------------------------------------
+  ops-explain:
+    environment:
+      LOG_LEVEL: DEBUG
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./ops-explain:/app/ops_explain
+      - ./shared:/app/shared
+    command:
+      - uvicorn
+      - ops_explain.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8005"
+      - --reload
+      - --reload-dir
+      - /app/ops_explain
+      - --reload-dir
+      - /app/shared
+
+  # ---------------------------------------------------------------------------
+  # ops-api — override dev
+  # ---------------------------------------------------------------------------
+  ops-api:
+    environment:
+      LOG_LEVEL: DEBUG
+    command:
+      - uvicorn
+      - ops_api.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/ops_api
+      - --reload-dir
+      - /app/shared
+    volumes:
+      - ./ops-api:/app/ops_api
+      - ./shared:/app/shared
+
+  # ---------------------------------------------------------------------------
+  # ops-ui — override dev
+  # Em dev, expõe a porta nginx na 3000 (já definida no compose principal)
+  # e faz bind mount do dist/ local (se disponível após `npm run build`).
+  # TASK-034 adicionará ng serve para hot-reload do Angular.
+  # ---------------------------------------------------------------------------
+  ops-ui:
+    environment:
+      NGINX_HOST: localhost
+    volumes:
+      - ./ops-ui/dist:/usr/share/nginx/html:ro
+      - ./ops-ui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
