@@ -9,12 +9,20 @@ in this monorepo).
 pytest.ini at the repository root MUST include ``addopts = --import-mode=importlib``.
 """
 
+from __future__ import annotations
+
 import importlib.util
 import sys
 import types
 from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).parent.parent
 _SERVICE_ROOT = Path(__file__).parent
+
+# Insert project root so ``shared.*`` is resolvable in integration sessions.
+_path_str = str(_PROJECT_ROOT)
+if _path_str not in sys.path:
+    sys.path.insert(0, _path_str)
 
 
 def _register_module(name: str, path: Path) -> None:
@@ -35,19 +43,8 @@ if "ops_models" not in sys.modules:
     ns_pkg.__package__ = "ops_models"
     sys.modules["ops_models"] = ns_pkg
 
-_register_module(
-    "ops_models.app",
-    _SERVICE_ROOT / "app" / "__init__.py",
-)
-_register_module(
-    "ops_models.app.serving",
-    _SERVICE_ROOT / "app" / "serving" / "__init__.py",
-)
-_register_module(
-    "ops_models.app.serving.onnx_runner",
-    _SERVICE_ROOT / "app" / "serving" / "onnx_runner.py",
-)
-_register_module(
-    "ops_models.app.serving.model_registry",
-    _SERVICE_ROOT / "app" / "serving" / "model_registry.py",
-)
+_register_module("ops_models.app", _SERVICE_ROOT / "app" / "__init__.py")
+_register_module("ops_models.app.schemas", _SERVICE_ROOT / "app" / "schemas.py")
+_register_module("ops_models.app.serving", _SERVICE_ROOT / "app" / "serving" / "__init__.py")
+_register_module("ops_models.app.serving.onnx_runner", _SERVICE_ROOT / "app" / "serving" / "onnx_runner.py")
+_register_module("ops_models.app.serving.model_registry", _SERVICE_ROOT / "app" / "serving" / "model_registry.py")
