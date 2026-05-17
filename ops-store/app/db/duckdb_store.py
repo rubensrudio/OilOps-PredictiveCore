@@ -142,7 +142,7 @@ class DuckDBStore(StorageInterface):
         that re-running against an already-initialised database is safe.
         """
         sql = _MIGRATION_SQL_PATH.read_text(encoding="utf-8")
-        self._conn.executemany if False else self._conn.execute(sql)
+        self._conn.execute(sql)
         logger.debug(
             "DuckDBStore: migration applied",
             extra={"db_path": self._db_path},
@@ -160,6 +160,12 @@ class DuckDBStore(StorageInterface):
     def write_raw_readings(self, readings: list[dict[str, Any]]) -> int:
         """Persist a batch of raw telemetry readings into ``raw_readings``.
 
+        Uses ``INSERT OR IGNORE`` so that re-submitting the same reading (same
+        ``id`` UUID) is silently dropped rather than raising a duplicate-key
+        error.  This provides idempotency as required by RN-02: raw readings
+        are immutable after first write; a retry of the same ingestion batch
+        must not cause an error or duplicate the row.
+
         Parameters
         ----------
         readings:
@@ -170,19 +176,23 @@ class DuckDBStore(StorageInterface):
         Returns
         -------
         int
-            Number of rows actually inserted.
+            Number of rows passed to the batch insert.  Because DuckDB does not
+            expose a reliable ``changes()`` equivalent for ``executemany``, this
+            returns ``len(readings)`` (the number submitted).  Callers that need
+            the exact inserted-vs-ignored breakdown should query before and after
+            (see ``write_feature_record`` for the COUNT pattern).
 
         Raises
         ------
         duckdb.Error
-            Propagated on write failure (e.g. duplicate primary key).
+            Propagated on write failure for reasons other than a duplicate PK.
         """
         if not readings:
             return 0
 
         placeholders = ", ".join(["?"] * len(_RAW_READINGS_COLUMNS))
         insert_sql = (
-            f"INSERT INTO raw_readings "
+            f"INSERT OR IGNORE INTO raw_readings "
             f"({', '.join(_RAW_READINGS_COLUMNS)}) "
             f"VALUES ({placeholders})"
         )
@@ -283,8 +293,14 @@ class DuckDBStore(StorageInterface):
             for col in _FEATURE_RECORDS_COLUMNS
         )
 
-        # Count rows before to detect whether the INSERT OR IGNORE actually
-        # inserted (DuckDB does not expose a reliable changes() equivalent).
+        # Count rows before and after to detect whether the INSERT OR IGNORE
+        # actually inserted a new row.  DuckDB's embedded Python API does not
+        # expose a reliable ``changes()`` / ``rowcount`` equivalent for
+        # ``INSERT OR IGNORE`` across all versions (confirmed up to DuckDB
+        # 0.10.x, the minimum version declared in plan.md §7.1).  The two
+        # extra COUNT queries are cheap for the Fase 1 batch ingestion model
+        # (not a hot path); revisit if per-record write throughput becomes a
+        # concern in Fase 2.
         before: int = self._conn.execute(
             "SELECT COUNT(*) FROM feature_records "
             "WHERE asset_id = ? "
