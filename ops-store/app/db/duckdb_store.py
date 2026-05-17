@@ -341,6 +341,24 @@ class DuckDBStore(StorageInterface):
         )
         return inserted
 
+    def get_distinct_asset_ids(self) -> list[str]:
+        """Return a sorted list of distinct ``asset_id`` values in ``raw_readings``.
+
+        Used by ``ops-store``'s ``GET /internal/assets`` endpoint so that
+        ``ops-feature`` can discover all assets that have telemetry without
+        needing a dedicated assets registry.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of asset identifiers.  Empty list when no readings
+            have been ingested yet.
+        """
+        result = self._conn.execute(
+            "SELECT DISTINCT asset_id FROM raw_readings ORDER BY asset_id ASC"
+        ).fetchall()
+        return [row[0] for row in result]
+
     def get_feature_records_by_asset(
         self,
         asset_id: str,

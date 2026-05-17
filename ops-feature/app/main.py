@@ -375,9 +375,13 @@ async def _poll_pending_assets(poll_interval: int, ops_store_url: str) -> None:
 
 
 async def _fetch_asset_ids(ops_store_url: str, trace_id: str) -> list[str]:
-    """Return the list of registered asset_ids from ops-store.
+    """Return the list of distinct asset_ids from ops-store.
 
-    Returns an empty list on network error (graceful degradation).
+    Calls ``GET /internal/assets`` which returns a JSON array of string
+    asset identifiers (introduced in TASK-015 fix / ops-store TASK-008).
+
+    Returns an empty list on network error or unexpected response shape
+    (graceful degradation — poller continues running).
     """
     url = f"{ops_store_url.rstrip('/')}/internal/assets"
     headers = {"X-Trace-Id": trace_id}
@@ -386,12 +390,9 @@ async def _fetch_asset_ids(ops_store_url: str, trace_id: str) -> list[str]:
             response = await client.get(url, headers=headers)
         if response.status_code == 200:
             data = response.json()
-            # ops-store returns either a list of asset dicts or a dict with
-            # an 'assets' key — handle both shapes defensively.
+            # ops-store returns a plain list[str] of asset_ids.
             if isinstance(data, list):
-                return [item["id"] for item in data if "id" in item]
-            if isinstance(data, dict) and "assets" in data:
-                return [item["id"] for item in data["assets"] if "id" in item]
+                return [item for item in data if isinstance(item, str)]
         _logger.warning(
             "ops-store GET /internal/assets returned unexpected status",
             extra={"status_code": response.status_code},
@@ -639,12 +640,36 @@ async def post_compute(
     try:
         result = pipeline.run(asset_id)
 
+        # MAJOR-2 fix: check for pipeline error BEFORE checking no_readings.
+        # When WindowingPipeline.run() returns a dict with an "error" key it
+        # means the pipeline raised an unrecoverable exception for this asset.
+        # Returning HTTP 202 in that case would silently discard the error and
+        # mislead the caller into believing the computation succeeded.
+        if "error" in result:
+            error_detail = result["error"]
+            _logger.error(
+                "POST /internal/compute: pipeline returned an error",
+                extra={
+                    "asset_id": asset_id,
+                    "error": error_detail,
+                    "trace_id": trace_id,
+                },
+            )
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "asset_id": asset_id,
+                    "error": error_detail,
+                },
+            )
+
         # If the pipeline found no readings (all counters == 0 and no error),
         # return HTTP 200 with computed=0
         no_readings = (
             result.get("windows_processed", 0) == 0
             and result.get("records_written", 0) == 0
-            and "error" not in result
         )
 
         if no_readings:

@@ -33,7 +33,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -206,6 +206,42 @@ class TestPostCompute:
         response = client_with_data.post("/internal/compute/UNKNOWN-ASSET-999")
         assert response.status_code == 200
         assert response.json() == {"computed": 0}
+
+    def test_pipeline_error_returns_500(
+        self, in_memory_store: DuckDBStore
+    ) -> None:
+        """MAJOR-2 fix: when WindowingPipeline.run() returns a dict with 'error',
+        the endpoint must return HTTP 500 (not HTTP 202) with the error detail.
+        """
+        # Build a mock pipeline whose run() always returns an error dict.
+        failing_pipeline = MagicMock(spec=WindowingPipeline)
+        failing_pipeline.run.return_value = {
+            "asset_id": "ASSET-ERR",
+            "windows_processed": 0,
+            "records_written": 0,
+            "records_skipped": 0,
+            "windows_too_small": 0,
+            "error": "Simulated pipeline failure",
+        }
+
+        def _get_failing_pipeline() -> WindowingPipeline:
+            return failing_pipeline  # type: ignore[return-value]
+
+        app.dependency_overrides[get_pipeline] = _get_failing_pipeline
+        try:
+            with TestClient(app, raise_server_exceptions=True) as client:
+                response = client.post("/internal/compute/ASSET-ERR")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 500, (
+            f"Expected 500 when pipeline returns error, got {response.status_code}: "
+            f"{response.text}"
+        )
+        body = response.json()
+        assert body["asset_id"] == "ASSET-ERR"
+        assert "error" in body
+        assert body["error"] == "Simulated pipeline failure"
 
 
 # ---------------------------------------------------------------------------
