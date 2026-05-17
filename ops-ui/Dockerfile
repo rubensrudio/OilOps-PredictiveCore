@@ -1,34 +1,54 @@
 # ops-ui/Dockerfile
 # =============================================================================
-# PLACEHOLDER — será substituído pelo Dockerfile multi-stage completo em
-# TASK-034 (build Angular 17 + serve nginx).
+# Multi-stage build: Angular 17 production build + nginx:alpine static serving.
+# Build context: repo root (.)  — all COPY paths are relative to repo root.
 #
-# Este placeholder usa nginx:alpine com um index.html de status para que o
-# serviço ops-ui suba corretamente no docker compose up enquanto TASK-034
-# não é implementada. O healthcheck retorna 200 via nginx.
+# Stage 1 (build): node:18-alpine — installs deps and compiles Angular app.
+# Stage 2 (final): nginx:alpine  — serves the static dist over port 80.
 #
-# TASK-034 substituirá este arquivo com:
-#   - Stage 1: node:18-alpine — npm ci && ng build --configuration production
-#   - Stage 2: nginx:alpine — copia dist/ e aplica nginx.conf com proxy /api/
+# Angular 17 (@angular-devkit/build-angular:application) outputs to:
+#   dist/ops-ui/browser/
 #
 # WARNING: SISTEMA ADVISORY ONLY — NÃO SUBSTITUI SISTEMAS DE SEGURANÇA
 #          INSTRUMENTADA (RN-06). Autenticação desativada por padrão (LAC-02).
 # =============================================================================
 
-FROM nginx:alpine
+# ---------------------------------------------------------------------------
+# Stage 1: build
+# ---------------------------------------------------------------------------
+FROM node:18-alpine AS build
+
+WORKDIR /app
+
+# Copy only package manifests first to leverage Docker layer cache.
+COPY ops-ui/package*.json ./
+
+# Install exact versions from lock file (no network-mutable installs).
+RUN npm ci
+
+# Copy application source and build configuration.
+COPY ops-ui/src ./src
+COPY ops-ui/angular.json .
+COPY ops-ui/tsconfig*.json ./
+
+# Compile Angular application for production.
+RUN npm run build -- --configuration production
+
+# ---------------------------------------------------------------------------
+# Stage 2: final
+# ---------------------------------------------------------------------------
+FROM nginx:alpine AS final
 
 LABEL service="ops-ui" \
-      description="OilOps Angular 17 UI — placeholder (TASK-034 pending)" \
+      description="OilOps Angular 17 UI — multi-stage nginx static server" \
       advisory="This system is ADVISORY ONLY and does NOT replace safety-instrumented systems"
 
-# Copy nginx configuration (proxy /api/ -> ops-api:8000)
-COPY ops-ui/nginx.conf /etc/nginx/conf.d/default.conf
+# Copy compiled Angular browser bundle from the build stage.
+# Angular 17 (application builder) outputs to dist/ops-ui/browser/.
+COPY --from=build /app/dist/ops-ui/browser /usr/share/nginx/html
 
-# Create a simple placeholder index.html so the healthcheck passes
-RUN echo '<!DOCTYPE html><html><head><title>OilOps UI — Coming Soon</title></head><body>' \
-    '<h1>OilOps Predictive Core</h1>' \
-    '<p>UI placeholder — TASK-034 (Angular 17 build) pending.</p>' \
-    '<p><a href="/api/health">API Health</a></p>' \
-    '</body></html>' > /usr/share/nginx/html/index.html
+# Apply nginx reverse-proxy configuration (proxy /api/ -> ops-api:8000).
+# Path is relative to repo-root build context.
+COPY ops-ui/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
