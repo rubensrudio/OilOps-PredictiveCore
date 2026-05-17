@@ -48,3 +48,4 @@ if "ops_explain" not in sys.modules:
 _register_module("ops_explain.app", _APP_DIR / "__init__.py")
 _register_module("ops_explain.app.shap_explainer", _APP_DIR / "shap_explainer.py")
 _register_module("ops_explain.app.background", _APP_DIR / "background.py")
+_register_module("ops_explain.app.main", _APP_DIR / "main.py")
