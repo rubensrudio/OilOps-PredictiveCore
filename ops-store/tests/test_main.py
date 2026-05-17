@@ -385,6 +385,50 @@ class TestPostPredictions:
 
 
 # ---------------------------------------------------------------------------
+# Tests: GET /internal/assets
+# ---------------------------------------------------------------------------
+
+
+class TestGetAssets:
+    """Verify GET /internal/assets behaviour."""
+
+    def test_returns_empty_list_when_no_readings(
+        self, client: TestClient
+    ) -> None:
+        """No readings ingested -> empty list returned."""
+        response = client.get("/internal/assets")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_returns_distinct_asset_ids(
+        self, client: TestClient, duckdb_store: DuckDBStore
+    ) -> None:
+        """Assets with readings are returned; duplicates are deduplicated."""
+        r1 = _reading(asset_id="PUMP-001")
+        r2 = _reading(asset_id="PUMP-001")  # same asset, different reading
+        r3 = _reading(asset_id="PUMP-002")
+        duckdb_store.write_raw_readings([r1, r2, r3])
+
+        response = client.get("/internal/assets")
+        assert response.status_code == 200
+        asset_ids = response.json()
+        assert isinstance(asset_ids, list)
+        assert sorted(asset_ids) == ["PUMP-001", "PUMP-002"]
+
+    def test_returns_sorted_asset_ids(
+        self, client: TestClient, duckdb_store: DuckDBStore
+    ) -> None:
+        """Asset list is sorted alphabetically."""
+        for asset_id in ["ZEBRA-001", "ALPHA-001", "MANGO-001"]:
+            duckdb_store.write_raw_readings([_reading(asset_id=asset_id)])
+
+        response = client.get("/internal/assets")
+        assert response.status_code == 200
+        asset_ids = response.json()
+        assert asset_ids == sorted(asset_ids)
+
+
+# ---------------------------------------------------------------------------
 # Tests: GET /internal/predictions/{asset_id}/latest
 # ---------------------------------------------------------------------------
 

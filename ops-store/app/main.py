@@ -17,6 +17,7 @@ POST   /internal/features                        Persist a feature record (DuckD
 GET    /internal/features/{asset_id}             Read feature records by asset + time window
 POST   /internal/predictions                     Persist prediction + audit event atomically (SQLite)
 GET    /internal/predictions/{asset_id}/latest   Return latest prediction or HTTP 404
+GET    /internal/assets                          Return distinct asset_ids that have raw readings
 
 Dependency injection
 --------------------
@@ -328,6 +329,32 @@ def post_prediction(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return WritePredictionResponse(prediction_id=prediction_id)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: GET /internal/assets
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/internal/assets",
+    status_code=200,
+    summary="Return distinct asset_ids that have raw readings",
+    tags=["assets"],
+)
+def get_assets(
+    store: DuckDBStore = Depends(get_duckdb_store),
+) -> list[str]:
+    """Return a sorted list of distinct ``asset_id`` values present in the
+    ``raw_readings`` table.
+
+    This endpoint is used by ``ops-feature``'s background poller to discover
+    which assets have telemetry data so it can trigger feature computation for
+    each of them.
+
+    Returns an empty list when no raw readings have been ingested yet.
+    """
+    return store.get_distinct_asset_ids()
 
 
 # ---------------------------------------------------------------------------
