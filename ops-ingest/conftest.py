@@ -76,7 +76,14 @@ if "ops_ingest.app" not in sys.modules:
 # Register ops_ingest.app.schemas submodule
 _register_module("ops_ingest.app.schemas", _APP_DIR / "schemas.py")
 
+# Register ops_ingest.app.normalizer submodule (used by rest_batch and main)
+_register_module("ops_ingest.app.normalizer", _APP_DIR / "normalizer.py")
+
 # Register ops_ingest.app.adapters package and its stubs (TASK-011)
 _register_module("ops_ingest.app.adapters", _ADAPTERS_DIR / "__init__.py")
+_register_module("ops_ingest.app.adapters.rest_batch", _ADAPTERS_DIR / "rest_batch.py")
 _register_module("ops_ingest.app.adapters.mqtt_stub", _ADAPTERS_DIR / "mqtt_stub.py")
 _register_module("ops_ingest.app.adapters.kafka_stub", _ADAPTERS_DIR / "kafka_stub.py")
+
+# Register ops_ingest.app.main (TASK-012 FastAPI app)
+_register_module("ops_ingest.app.main", _APP_DIR / "main.py")
