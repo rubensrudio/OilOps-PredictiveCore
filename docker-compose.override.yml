@@ -33,9 +33,15 @@ services:
       # Porta interna exposta ao host para debug e curl direto
       - "8002:8002"
     volumes:
-      # Bind mount do código-fonte para hot-reload
-      - ./ops-store:/app/ops_store_src
+      # Bind mount do código-fonte para hot-reload.
+      # O Dockerfile faz COPY ops_store/ /app/ops_store/ seguido de
+      # COPY ops-store/ /app/ops_store/ — ambos os diretórios são mesclados
+      # em /app/ops_store/ na imagem. Em dev, montamos cada um no seu
+      # subpath correto para refletir a mesma estrutura sem sobreposição:
+      #   - ops_store/ (underscore) contém __init__.py e storage_interface
+      #   - ops-store/app/ contém main.py, db/, etc.
       - ./ops_store:/app/ops_store
+      - ./ops-store/app:/app/ops_store/app
       - ./shared:/app/shared
     command:
       - uvicorn

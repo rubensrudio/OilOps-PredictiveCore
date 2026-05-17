@@ -36,6 +36,10 @@ COPY ops-explain/ /app/ops_explain/
 
 ENV PYTHONPATH=/app
 
+# Run as non-root user (security hardening — OWASP Docker best practice)
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+USER appuser
+
 EXPOSE 8005
 
 CMD ["uvicorn", "ops_explain.app.main:app", \

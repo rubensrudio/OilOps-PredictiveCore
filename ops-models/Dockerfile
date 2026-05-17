@@ -37,11 +37,18 @@ ENV PYTHONPATH=/app
 # Volume mount points
 VOLUME ["/data", "/data/models", "/ops-reference/models"]
 
-EXPOSE 8004
-
 # Default entrypoint: runs the init script (copy ONNX + register model) then
 # starts uvicorn. Can be overridden in docker-compose.override.yml for dev.
 COPY ops-models/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Run as non-root user (security hardening — OWASP Docker best practice)
+# Note: appuser is created before volume declarations so that the user exists
+# when the entrypoint.sh runs as appuser. The entrypoint script writes to
+# /data/models which must be owned by appuser at runtime via volume mount.
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+USER appuser
+
+EXPOSE 8004
 
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]

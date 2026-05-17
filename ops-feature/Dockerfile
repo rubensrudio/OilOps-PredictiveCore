@@ -39,6 +39,10 @@ COPY ops-feature/ /app/ops_feature/
 
 ENV PYTHONPATH=/app
 
+# Run as non-root user (security hardening — OWASP Docker best practice)
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+USER appuser
+
 EXPOSE 8003
 
 CMD ["uvicorn", "ops_feature.app.main:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"]

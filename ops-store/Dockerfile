@@ -41,6 +41,11 @@ ENV PYTHONPATH=/app
 # Volume mount point for persistent data (DuckDB + SQLite files)
 VOLUME ["/data"]
 
+# Run as non-root user (security hardening — OWASP Docker best practice)
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+RUN mkdir -p /data && chown -R appuser:appgroup /data
+USER appuser
+
 EXPOSE 8002
 
 CMD ["uvicorn", "ops_store.app.main:app", \

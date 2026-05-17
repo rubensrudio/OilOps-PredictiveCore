@@ -39,6 +39,10 @@ COPY ops-ingest/ /app/ops_ingest/
 # `import shared.logging_config` resolve correctly at runtime
 ENV PYTHONPATH=/app
 
+# Run as non-root user (security hardening — OWASP Docker best practice)
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+USER appuser
+
 EXPOSE 8001
 
 # Default command — can be overridden in docker-compose.override.yml
