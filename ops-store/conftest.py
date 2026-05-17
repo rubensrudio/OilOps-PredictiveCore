@@ -80,3 +80,39 @@ if "ops_store.app.storage_interface" not in sys.modules:
         si_mod = importlib.util.module_from_spec(si_spec)
         sys.modules["ops_store.app.storage_interface"] = si_mod
         si_spec.loader.exec_module(si_mod)  # type: ignore[union-attr]
+
+# ---------------------------------------------------------------------------
+# Register ops_store.app.db subpackage (TASK-006: DuckDBStore;
+# TASK-007: SQLiteStore added when sqlite_store.py exists)
+# ---------------------------------------------------------------------------
+
+_DB_DIR = _APP_DIR / "db"
+
+if "ops_store.app.db" not in sys.modules:
+    ops_store_db_mod = ModuleType("ops_store.app.db")
+    ops_store_db_mod.__path__ = [str(_DB_DIR)]  # type: ignore[attr-defined]
+    ops_store_db_mod.__package__ = "ops_store.app.db"
+    sys.modules["ops_store.app.db"] = ops_store_db_mod
+
+# DuckDBStore — TASK-006
+if "ops_store.app.db.duckdb_store" not in sys.modules:
+    duckdb_spec = importlib.util.spec_from_file_location(
+        "ops_store.app.db.duckdb_store",
+        str(_DB_DIR / "duckdb_store.py"),
+    )
+    if duckdb_spec and duckdb_spec.loader:
+        duckdb_mod = importlib.util.module_from_spec(duckdb_spec)
+        sys.modules["ops_store.app.db.duckdb_store"] = duckdb_mod
+        duckdb_spec.loader.exec_module(duckdb_mod)  # type: ignore[union-attr]
+
+# SQLiteStore — TASK-007 (only registered when the file exists)
+_sqlite_store_path = _DB_DIR / "sqlite_store.py"
+if "ops_store.app.db.sqlite_store" not in sys.modules and _sqlite_store_path.exists():
+    ss_spec = importlib.util.spec_from_file_location(
+        "ops_store.app.db.sqlite_store",
+        str(_sqlite_store_path),
+    )
+    if ss_spec and ss_spec.loader:
+        ss_mod = importlib.util.module_from_spec(ss_spec)
+        sys.modules["ops_store.app.db.sqlite_store"] = ss_mod
+        ss_spec.loader.exec_module(ss_mod)  # type: ignore[union-attr]
