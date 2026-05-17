@@ -288,3 +288,28 @@ class TestGetHealth:
         body = client.get("/health").json()
         for svc in _ALL_SERVICES:
             assert body["services"][svc] == "starting"
+
+
+# ---------------------------------------------------------------------------
+# Integration test — router registration in the production app (TASK-026 r2)
+# ---------------------------------------------------------------------------
+
+
+def test_health_route_registered_in_main_app() -> None:
+    """Verify GET /health is registered in the production app.
+
+    This test imports ``ops_api.app.main.app`` (the real FastAPI application
+    assembled by main.py) and asserts that ``/health`` is present in the
+    registered routes.  A missing ``app.include_router(_health_router)`` call
+    would cause this test to fail, catching the regression identified in the
+    QA wave that raised TASK-026-r2.
+
+    Criterion: INIT-US-05 AC2 — GET /health reachable after stack is up.
+    """
+    from ops_api.app.main import app
+
+    routes = {r.path for r in app.routes}
+    assert "/health" in routes, (
+        "GET /health is not registered in the production app.  "
+        "Add app.include_router(_health_router) to ops-api/app/main.py."
+    )

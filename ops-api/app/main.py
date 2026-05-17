@@ -15,8 +15,10 @@ This module wires together:
     - stream router — WS /predictions/stream
   - Router registered for TASK-025:
     - models router — POST /models/deploy
+  - Router registered for TASK-026:
+    - health router — GET /health (fan-out to 5 dependent services)
 
-Routers for TASK-026 and TASK-027 are registered here via
+Routers for TASK-027 are registered here via
 ``app.include_router()`` once they are implemented.
 
 IMPORTANT — RN-06 advisory notice
@@ -103,7 +105,7 @@ app.add_middleware(AdvisoryMiddleware)
 app.add_middleware(TracingMiddleware)
 
 # ---------------------------------------------------------------------------
-# Router registration (TASK-022 + TASK-023 + TASK-024 + TASK-025)
+# Router registration (TASK-022 + TASK-023 + TASK-024 + TASK-025 + TASK-026)
 # ---------------------------------------------------------------------------
 
 from ops_api.app.routers.telemetry import router as _telemetry_router  # noqa: E402
@@ -111,12 +113,14 @@ from ops_api.app.routers.predictions import router as _predictions_router  # noq
 from ops_api.app.routers.explain import router as _explain_router  # noqa: E402
 from ops_api.app.routers.stream import router as _stream_router  # noqa: E402
 from ops_api.app.routers.models import router as _models_router  # noqa: E402
+from ops_api.app.routers.health import router as _health_router  # noqa: E402
 
 app.include_router(_telemetry_router)
 app.include_router(_predictions_router)
 app.include_router(_explain_router)
 app.include_router(_stream_router)
 app.include_router(_models_router)
+app.include_router(_health_router)
 
 # ---------------------------------------------------------------------------
 # Root endpoint — advisory notice (RN-06)
