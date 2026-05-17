@@ -10,6 +10,11 @@ Criteria from tasks.md (TASK-019):
       least top_n items ordered by rank.
     - Items have keys: feature_name, attribution_value, rank.
     - Rank 1 has the highest absolute attribution_value.
+
+Integration criterion (re-review fix):
+    - make_onnx_predict_fn wraps OnnxRunner correctly for KernelExplainer.
+    - SHAPExplainer.explain called with make_onnx_predict_fn does not raise
+      and returns feature_attributions with >= 5 items.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from ops_explain.app.shap_explainer import SHAPExplainer
+from ops_explain.app.shap_explainer import SHAPExplainer, make_onnx_predict_fn
 
 
 # ---------------------------------------------------------------------------
@@ -205,3 +210,115 @@ class TestSHAPExplainerTopN:
         result = exp.explain(features)
         # Should return all 3 features (capped at n_features)
         assert len(result["feature_attributions"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — make_onnx_predict_fn with mock OnnxRunner
+# ---------------------------------------------------------------------------
+
+
+class _MockOnnxRunner:
+    """Minimal mock that mimics ``OnnxRunner.run`` contract.
+
+    Accepts a 1-D ``list[float]`` and returns
+    ``{"anomaly_score": float, "confidence_score": float}``.
+    The anomaly_score is computed as the mean of the input features clamped
+    to [0, 1], giving a deterministic non-trivial output for SHAP to work with.
+    """
+
+    def run(self, features: list[float]) -> dict[str, float]:
+        # features is 1-D list[float] as required by OnnxRunner contract.
+        score = float(np.clip(np.mean(features), 0.0, 1.0))
+        return {"anomaly_score": score, "confidence_score": score}
+
+
+class TestMakeOnnxPredictFn:
+    """Verify make_onnx_predict_fn produces a KernelExplainer-compatible wrapper."""
+
+    def test_predict_fn_returns_1d_array_for_batch_input(self) -> None:
+        """predict_fn must accept 2-D input and return 1-D ndarray."""
+        mock_runner = _MockOnnxRunner()
+        predict_fn = make_onnx_predict_fn(mock_runner)
+
+        n_samples, n_features = 5, 8
+        X = np.random.default_rng(0).uniform(0, 1, (n_samples, n_features)).astype(np.float32)
+        result = predict_fn(X)
+
+        assert isinstance(result, np.ndarray), "predict_fn must return ndarray"
+        assert result.ndim == 1, f"Expected 1-D output, got shape {result.shape}"
+        assert result.shape == (n_samples,), (
+            f"Expected shape ({n_samples},), got {result.shape}"
+        )
+
+    def test_predict_fn_output_dtype_is_float32(self) -> None:
+        """Output dtype must be float32 for SHAP compatibility."""
+        mock_runner = _MockOnnxRunner()
+        predict_fn = make_onnx_predict_fn(mock_runner)
+
+        X = np.ones((3, 4), dtype=np.float32)
+        result = predict_fn(X)
+
+        assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
+
+    def test_predict_fn_extracts_anomaly_score_not_dict(self) -> None:
+        """Each element of the output must be a scalar float, not a dict."""
+        mock_runner = _MockOnnxRunner()
+        predict_fn = make_onnx_predict_fn(mock_runner)
+
+        X = np.array([[0.1, 0.9], [0.4, 0.6]], dtype=np.float32)
+        result = predict_fn(X)
+
+        for val in result:
+            assert isinstance(float(val), float), (
+                f"Expected scalar float in output, got {type(val)}"
+            )
+
+    def test_shap_explainer_with_onnx_runner_mock_does_not_raise(self) -> None:
+        """Integration: SHAPExplainer.explain with make_onnx_predict_fn must not raise.
+
+        This is the core regression test for the integration issue:
+        a naïve lambda wrapper would pass 2-D input to OnnxRunner (expects 1-D)
+        and return a dict (SHAP expects 1-D ndarray), breaking the computation.
+        make_onnx_predict_fn fixes both problems.
+
+        Criterion from re-review: returns feature_attributions with >= 5 items.
+        """
+        mock_runner = _MockOnnxRunner()
+        predict_fn = make_onnx_predict_fn(mock_runner)
+
+        feature_names = [f"feat_{i}" for i in range(8)]
+        explainer = SHAPExplainer(
+            predict_fn=predict_fn,
+            feature_names=feature_names,
+            top_n=5,
+            n_background=8,
+        )
+
+        features = np.random.default_rng(42).uniform(0.0, 1.0, 8).tolist()
+        result = explainer.explain(features)
+
+        assert "feature_attributions" in result
+        assert len(result["feature_attributions"]) >= 5, (
+            f"Expected >= 5 feature_attributions, got {len(result['feature_attributions'])}"
+        )
+
+    def test_shap_explainer_attribution_item_structure_with_onnx_mock(self) -> None:
+        """Each attribution item from OnnxRunner-backed explainer has required keys."""
+        mock_runner = _MockOnnxRunner()
+        predict_fn = make_onnx_predict_fn(mock_runner)
+
+        feature_names = [f"sensor_{i}" for i in range(6)]
+        explainer = SHAPExplainer(
+            predict_fn=predict_fn,
+            feature_names=feature_names,
+            top_n=5,
+            n_background=6,
+        )
+
+        result = explainer.explain([0.2, 0.4, 0.6, 0.1, 0.8, 0.3])
+
+        for item in result["feature_attributions"]:
+            assert "feature_name" in item
+            assert "attribution_value" in item
+            assert "rank" in item
+            assert item["feature_name"] in feature_names

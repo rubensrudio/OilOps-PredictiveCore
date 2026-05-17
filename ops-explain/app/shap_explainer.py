@@ -41,11 +41,69 @@ The ``explain`` method also computes ``baseline_window`` statistics
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def make_onnx_predict_fn(runner: Any) -> Callable[[np.ndarray], np.ndarray]:
+    """Create a ``shap.KernelExplainer``-compatible wrapper around an ``OnnxRunner``.
+
+    ``shap.KernelExplainer`` calls its ``model`` callable with a 2-D
+    ``numpy.ndarray`` of shape ``(n_samples, n_features)`` and expects a 1-D
+    ``numpy.ndarray`` of shape ``(n_samples,)`` in return.
+
+    ``OnnxRunner.run`` accepts a 1-D sequence of floats and returns a dict
+    ``{"anomaly_score": float, "confidence_score": float}``.  A naïve
+    ``lambda x: runner.run(x)`` would (a) pass the entire 2-D matrix to
+    ``run``, which expects 1-D input, and (b) return a ``dict`` that SHAP
+    would coerce to a 0-D scalar — both are incorrect.
+
+    This factory iterates over rows of the input matrix, calls ``runner.run``
+    per row, extracts ``anomaly_score``, and returns the results as a 1-D
+    ``float32`` array.
+
+    Parameters
+    ----------
+    runner:
+        An ``OnnxRunner`` instance (or any object exposing a
+        ``run(features: list[float]) -> {"anomaly_score": float, ...}``
+        interface).
+
+    Returns
+    -------
+    Callable[[np.ndarray], np.ndarray]
+        A function suitable for use as the ``predict_fn`` argument of
+        :class:`SHAPExplainer`.
+
+    Example
+    -------
+    Typical usage wiring ``SHAPExplainer`` with an ``OnnxRunner``::
+
+        from ops_models.app.serving.onnx_runner import OnnxRunner
+        from ops_explain.app.shap_explainer import SHAPExplainer, make_onnx_predict_fn
+
+        runner = OnnxRunner("path/to/model.onnx")
+        predict_fn = make_onnx_predict_fn(runner)
+
+        explainer = SHAPExplainer(
+            predict_fn=predict_fn,
+            feature_names=["rms", "variance", "kurtosis", "skewness"],
+            top_n=5,
+        )
+        result = explainer.explain([0.12, 0.03, 1.8, 0.5])
+    """
+
+    def predict_fn(X: np.ndarray) -> np.ndarray:
+        # X is 2-D: (n_samples, n_features)
+        return np.array(
+            [runner.run(row.tolist())["anomaly_score"] for row in X],
+            dtype=np.float32,
+        )
+
+    return predict_fn
 
 
 class SHAPExplainer:
@@ -169,6 +227,25 @@ class SHAPExplainer:
         ------
         ValueError
             If ``features`` length does not match ``len(self._feature_names)``.
+
+        Notes
+        -----
+        **Using with OnnxRunner:** Do NOT pass a naïve ``lambda x: runner.run(x)``
+        as ``predict_fn``.  ``KernelExplainer`` calls ``predict_fn`` with a 2-D
+        array ``(n_samples, n_features)`` and expects a 1-D array ``(n_samples,)``
+        back; ``OnnxRunner.run`` expects a 1-D input and returns a ``dict``, so a
+        naïve wrapper produces incorrect shapes on both ends.  Use the factory
+        :func:`make_onnx_predict_fn` instead::
+
+            from ops_explain.app.shap_explainer import SHAPExplainer, make_onnx_predict_fn
+
+            predict_fn = make_onnx_predict_fn(runner)   # runner is OnnxRunner
+            explainer = SHAPExplainer(
+                predict_fn=predict_fn,
+                feature_names=feature_names,
+                top_n=5,
+            )
+            result = explainer.explain(features)
         """
         import shap  # deferred import — not all callers need it at module load
 
