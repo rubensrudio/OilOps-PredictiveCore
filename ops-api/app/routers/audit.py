@@ -63,11 +63,11 @@ References
 from __future__ import annotations
 
 import os
-from datetime import datetime
 from typing import Any, AsyncGenerator, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import AwareDatetime
 
 router = APIRouter(tags=["observability"])
 
@@ -124,14 +124,20 @@ async def get_audit(
         default=None,
         description="Filter events by asset identifier.",
     ),
-    from_: Optional[datetime] = Query(
+    from_: Optional[AwareDatetime] = Query(
         default=None,
         alias="from",
-        description="Return events triggered at or after this UTC datetime (ISO 8601).",
+        description=(
+            "Return events triggered at or after this UTC datetime (ISO 8601 with UTC "
+            "offset, e.g. 2026-01-01T00:00:00Z).  Naive datetimes are rejected (RN-01)."
+        ),
     ),
-    to: Optional[datetime] = Query(
+    to: Optional[AwareDatetime] = Query(
         default=None,
-        description="Return events triggered at or before this UTC datetime (ISO 8601).",
+        description=(
+            "Return events triggered at or before this UTC datetime (ISO 8601 with UTC "
+            "offset, e.g. 2026-12-31T23:59:59Z).  Naive datetimes are rejected (RN-01)."
+        ),
     ),
     page: int = Query(
         default=1,
@@ -160,8 +166,10 @@ async def get_audit(
         Optional filter by asset identifier.
     from_:
         Optional lower-bound filter on ``triggered_at`` (inclusive, UTC).
+        Must be timezone-aware (``AwareDatetime``); naive datetimes return HTTP 422 (RN-01).
     to:
         Optional upper-bound filter on ``triggered_at`` (inclusive, UTC).
+        Must be timezone-aware (``AwareDatetime``); naive datetimes return HTTP 422 (RN-01).
     page:
         1-based page index (default: 1).
     page_size:
