@@ -133,8 +133,4 @@ if (_APP_DIR / "websocket_manager.py").exists():
 if (_ROUTERS_DIR / "stream.py").exists():
     _register_module("ops_api.app.routers.stream", _ROUTERS_DIR / "stream.py")
 
-# WebSocket manager and stream router (TASK-024)
-_register_module("ops_api.app.websocket_manager", _APP_DIR / "websocket_manager.py")
-_register_module("ops_api.app.routers.stream", _ROUTERS_DIR / "stream.py")
-
 _register_module("ops_api.app.main", _APP_DIR / "main.py")
