@@ -4,20 +4,20 @@ ops-api/app/main.py
 FastAPI application entry-point for the ops-api public gateway service.
 
 This module wires together:
-  - AdvisoryMiddleware  — injects ``X-Advisory-Only: true`` in every response
-  - TracingMiddleware   — generates / propagates ``trace_id`` via ContextVar
+  - AdvisoryMiddleware  â€” injects ``X-Advisory-Only: true`` in every response
+  - TracingMiddleware   â€” generates / propagates ``trace_id`` via ContextVar
   - Routers registered for TASK-022:
-    - telemetry router  — POST /telemetry
-    - predictions router — GET /predictions/{asset_id}
+    - telemetry router  â€” POST /telemetry
+    - predictions router â€” GET /predictions/{asset_id}
   - Router registered for TASK-023:
-    - explain router — GET /explain/{prediction_id}
-  - Router registered for TASK-024:
-    - stream router — WS /predictions/stream
+    - explain router â€” GET /explain/{prediction_id}
+  - Router registered for TASK-025:
+    - models router â€” POST /models/deploy
 
-Routers for TASK-025 through TASK-027 are registered here via
+Routers for TASK-024, TASK-026 and TASK-027 are registered here via
 ``app.include_router()`` once they are implemented.
 
-IMPORTANT — RN-06 advisory notice
+IMPORTANT â€” RN-06 advisory notice
 ----------------------------------
 This system is purely advisory.  Predictions issued by the motor are NOT
 certified for safety-instrumented functions (SIF) or any safety-rated
@@ -43,7 +43,7 @@ _ADVISORY_VALUE = "true"
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="OilOps-PredictiveCore — Public Gateway API",
+    title="OilOps-PredictiveCore â€” Public Gateway API",
     description=(
         "Advisory-only predictive maintenance API.  "
         "Header X-Advisory-Only: true is present on all responses (RN-06)."
@@ -60,7 +60,15 @@ app = FastAPI(
 async def _validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Translate Pydantic/FastAPI 422 validation errors to HTTP 400."""
+    """Translate Pydantic/FastAPI 422 validation errors to HTTP 400.
+
+    External clients receive HTTP 400 (Bad Request) with the field-level
+    error details from Pydantic so they can understand which fields were
+    invalid (INIT-US-01 AC4, tasks.md TASK-022 design decision).
+
+    The X-Advisory-Only header is included so the middleware guarantee
+    (RN-06) holds on error responses too.
+    """
     return JSONResponse(
         status_code=400,
         content={"detail": exc.errors()},
@@ -70,7 +78,11 @@ async def _validation_exception_handler(
 
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Catch-all handler — ensures X-Advisory-Only is present even on 500s."""
+    """Catch-all handler â€” ensures X-Advisory-Only is present even on 500s.
+
+    The Starlette ServerErrorMiddleware bypasses ASGI middleware on unhandled
+    exceptions; adding an explicit handler here closes that gap.
+    """
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"},
@@ -78,22 +90,33 @@ async def _global_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
+# ---------------------------------------------------------------------------
+# Middleware registration (MUST happen before routers are included)
+# Order matters: add_middleware() calls are applied in reverse, so the LAST
+# add_middleware() becomes the OUTERMOST wrapper.
+# We want TracingMiddleware outermost (sets trace_id first), then Advisory.
+# ---------------------------------------------------------------------------
+
 app.add_middleware(AdvisoryMiddleware)
 app.add_middleware(TracingMiddleware)
 
 # ---------------------------------------------------------------------------
-# Router registration (TASK-022 + TASK-023 + TASK-024)
+# Router registration (TASK-022 + TASK-023 + TASK-025)
 # ---------------------------------------------------------------------------
 
 from ops_api.app.routers.telemetry import router as _telemetry_router  # noqa: E402
 from ops_api.app.routers.predictions import router as _predictions_router  # noqa: E402
 from ops_api.app.routers.explain import router as _explain_router  # noqa: E402
-from ops_api.app.routers.stream import router as _stream_router  # noqa: E402
+from ops_api.app.routers.models import router as _models_router  # noqa: E402
 
 app.include_router(_telemetry_router)
 app.include_router(_predictions_router)
 app.include_router(_explain_router)
-app.include_router(_stream_router)
+app.include_router(_models_router)
+
+# ---------------------------------------------------------------------------
+# Root endpoint â€” advisory notice (RN-06)
+# ---------------------------------------------------------------------------
 
 
 @app.get("/")
