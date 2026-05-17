@@ -133,4 +133,10 @@ if (_APP_DIR / "websocket_manager.py").exists():
 if (_ROUTERS_DIR / "stream.py").exists():
     _register_module("ops_api.app.routers.stream", _ROUTERS_DIR / "stream.py")
 
+# Routers from TASK-027 -- guarded so other branches remain unaffected
+if (_ROUTERS_DIR / "metrics.py").exists():
+    _register_module("ops_api.app.routers.metrics", _ROUTERS_DIR / "metrics.py")  # TASK-027
+if (_ROUTERS_DIR / "audit.py").exists():
+    _register_module("ops_api.app.routers.audit", _ROUTERS_DIR / "audit.py")  # TASK-027
+
 _register_module("ops_api.app.main", _APP_DIR / "main.py")
