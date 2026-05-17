@@ -116,3 +116,20 @@ if "ops_store.app.db.sqlite_store" not in sys.modules and _sqlite_store_path.exi
         ss_mod = importlib.util.module_from_spec(ss_spec)
         sys.modules["ops_store.app.db.sqlite_store"] = ss_mod
         ss_spec.loader.exec_module(ss_mod)  # type: ignore[union-attr]
+
+# ---------------------------------------------------------------------------
+# Register ops_store.app.main — FastAPI app (TASK-008)
+# Must be loaded AFTER duckdb_store and sqlite_store are registered so that
+# the ``from ops_store.app.db.duckdb_store import DuckDBStore`` inside main.py
+# resolves correctly against the already-registered sys.modules entries.
+# ---------------------------------------------------------------------------
+_main_path = _APP_DIR / "main.py"
+if "ops_store.app.main" not in sys.modules and _main_path.exists():
+    main_spec = importlib.util.spec_from_file_location(
+        "ops_store.app.main",
+        str(_main_path),
+    )
+    if main_spec and main_spec.loader:
+        main_mod = importlib.util.module_from_spec(main_spec)
+        sys.modules["ops_store.app.main"] = main_mod
+        main_spec.loader.exec_module(main_mod)  # type: ignore[union-attr]
