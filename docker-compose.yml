@@ -1,0 +1,307 @@
+# =============================================================================
+# docker-compose.yml — OilOps-PredictiveCore stack completa
+# =============================================================================
+#
+# AVISO DE SEGURANÇA (RN-06 / LAC-02):
+# ---------------------------------------------------------------------------
+# ESTE SISTEMA É ADVISORY ONLY — NÃO SUBSTITUI SISTEMAS DE SEGURANÇA
+# INSTRUMENTADA (SIL / safety-rated). Toda predição carrega o header
+# X-Advisory-Only: true e destina-se exclusivamente a apoio a decisões
+# operacionais, NÃO a controle automatizado de segurança.
+#
+# AUTENTICAÇÃO DESATIVADA POR PADRÃO:
+# Todos os endpoints são abertos nesta configuração. NÃO exponha esta stack
+# à internet sem ativar o mecanismo de autenticação por API Key via variável
+# de ambiente OILOPS_API_KEY. Consulte o README antes de qualquer deploy
+# fora de ambiente local isolado.
+# ---------------------------------------------------------------------------
+#
+# Serviços:
+#   ops-ingest  (porta 8001) — gateway de ingestão de telemetria
+#   ops-store   (porta 8002) — persistência DuckDB + SQLite
+#   ops-feature (porta 8003) — feature engineering (FFT + estatísticas)
+#   ops-models  (porta 8004) — serving ONNX + registry de modelos
+#   ops-explain (porta 8005) — atribuições SHAP assíncronas
+#   ops-api     (porta 8000) — API pública REST + WebSocket (única porta pública)
+#   ops-ui      (porta 3000) — dashboard Angular 17 (placeholder; TASK-034 pendente)
+#
+# Volumes:
+#   oilops-data   — DuckDB (raw readings + feature records) e SQLite (metadados)
+#   oilops-models — artefatos ONNX dos modelos servidos
+#
+# Uso básico:
+#   docker compose up --wait          # sobe toda a stack aguardando healthchecks
+#   docker compose down -v            # para e remove volumes
+#   docker compose logs -f ops-api    # logs em tempo real do gateway público
+#
+# Init automático do modelo de referência:
+#   O serviço ops-models executa ops-models/entrypoint.sh no boot, que copia
+#   vibration_autoencoder_v1.onnx do bind mount ops-reference/models/ para o
+#   volume oilops-models e registra o modelo no SQLite local. Nenhuma etapa
+#   manual é necessária (INIT-US-05-AC3, INIT-15).
+# =============================================================================
+
+name: oilops
+
+# ---------------------------------------------------------------------------
+# Rede interna (todos os serviços se comunicam via nome DNS do serviço)
+# ---------------------------------------------------------------------------
+networks:
+  oilops-net:
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# Volumes nomeados persistentes
+# ---------------------------------------------------------------------------
+volumes:
+  oilops-data:
+    driver: local
+  oilops-models:
+    driver: local
+
+# ---------------------------------------------------------------------------
+# Serviços
+# ---------------------------------------------------------------------------
+services:
+
+  # -------------------------------------------------------------------------
+  # ops-store — persistência (DuckDB + SQLite)
+  # Deve subir ANTES de qualquer outro serviço que persiste ou lê dados.
+  # -------------------------------------------------------------------------
+  ops-store:
+    build:
+      context: .
+      dockerfile: ops-store/Dockerfile
+    image: oilops/ops-store:latest
+    container_name: oilops-ops-store
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    environment:
+      OPS_STORE_DATA_DIR: /data
+      OILOPS_DATA_DIR: /data
+      PYTHONPATH: /app
+    volumes:
+      - oilops-data:/data
+    expose:
+      - "8002"
+    # healthcheck: GET /internal/assets retorna HTTP 200 (lista de asset_ids)
+    # quando DuckDB e SQLite estão inicializados corretamente.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/internal/assets"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # ops-ingest — gateway de ingestão (normaliza telemetria para schema canônico)
+  # Depende de ops-store para persistir os readings normalizados.
+  # -------------------------------------------------------------------------
+  ops-ingest:
+    build:
+      context: .
+      dockerfile: ops-ingest/Dockerfile
+    image: oilops/ops-ingest:latest
+    container_name: oilops-ops-ingest
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    environment:
+      OPS_STORE_URL: http://ops-store:8002
+      OPS_FEATURE_URL: http://ops-feature:8003
+      OILOPS_MAX_BACKFILL_DAYS: "30"
+      PYTHONPATH: /app
+    expose:
+      - "8001"
+    depends_on:
+      ops-store:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # ops-feature — feature engineering (janela deslizante, FFT, estatísticas)
+  # Depende de ops-store para ler raw readings e persistir feature records.
+  # -------------------------------------------------------------------------
+  ops-feature:
+    build:
+      context: .
+      dockerfile: ops-feature/Dockerfile
+    image: oilops/ops-feature:latest
+    container_name: oilops-ops-feature
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    environment:
+      OPS_STORE_URL: http://ops-store:8002
+      OILOPS_FEATURE_WINDOW_SIZE: "64"
+      OILOPS_FFT_BINS: "64"
+      POLL_INTERVAL_SECONDS: "30"
+      PYTHONPATH: /app
+    expose:
+      - "8003"
+    depends_on:
+      ops-store:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # ops-models — serving ONNX + registry de versões de modelos
+  # O entrypoint.sh copia o artefato ONNX de referência e registra no SQLite
+  # antes de iniciar o uvicorn (INIT-US-05-AC3 / INIT-15).
+  # Depende de ops-store para persistir predições e consultar modelos ativos.
+  # -------------------------------------------------------------------------
+  ops-models:
+    build:
+      context: .
+      dockerfile: ops-models/Dockerfile
+    image: oilops/ops-models:latest
+    container_name: oilops-ops-models
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    environment:
+      OPS_STORE_URL: http://ops-store:8002
+      # OPS_MODELS_DIR: caminho onde os artefatos ONNX são servidos
+      OPS_MODELS_DIR: /models
+      # OILOPS_DATA_DIR: diretório de dados (SQLite registry, DuckDB)
+      OILOPS_DATA_DIR: /data
+      OILOPS_REGISTRY_DB: /data/model_registry.db
+      OPS_REFERENCE_MODELS: /ops-reference/models
+      PYTHONPATH: /app
+    volumes:
+      # Volume separado para artefatos ONNX (evita conflito com /data)
+      - oilops-models:/models
+      # Volume de dados compartilhado (SQLite registry do ops-models)
+      - oilops-data:/data
+      # Bind mount do artefato ONNX de referência (somente leitura)
+      # O entrypoint.sh copia vibration_autoencoder_v1.onnx daqui para
+      # o volume oilops-models na primeira inicialização.
+      - ./ops-reference/models:/ops-reference/models:ro
+    expose:
+      - "8004"
+    depends_on:
+      ops-store:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 20s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+
+  # -------------------------------------------------------------------------
+  # ops-explain — cálculo assíncrono de atribuições SHAP (RN-04)
+  # Depende de ops-store (lê/escreve explain_results) e de ops-models
+  # (acessa artefato ONNX para DeepExplainer).
+  # -------------------------------------------------------------------------
+  ops-explain:
+    build:
+      context: .
+      dockerfile: ops-explain/Dockerfile
+    image: oilops/ops-explain:latest
+    container_name: oilops-ops-explain
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    environment:
+      OPS_STORE_URL: http://ops-store:8002
+      OPS_MODELS_URL: http://ops-models:8004
+      OILOPS_EXPLAIN_TOP_N: "5"
+      OILOPS_DATA_DIR: /data
+      PYTHONPATH: /app
+    volumes:
+      - oilops-data:/data
+    expose:
+      - "8005"
+    depends_on:
+      ops-store:
+        condition: service_healthy
+      ops-models:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+
+  # -------------------------------------------------------------------------
+  # ops-api — API pública REST + WebSocket (única porta exposta externamente)
+  # Agrega todos os serviços internos. Middleware injeta X-Advisory-Only: true
+  # em toda resposta (RN-06). Autenticação via OILOPS_API_KEY (opcional).
+  # -------------------------------------------------------------------------
+  ops-api:
+    build:
+      context: .
+      dockerfile: ops-api/Dockerfile
+    image: oilops/ops-api:latest
+    container_name: oilops-ops-api
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    environment:
+      OPS_STORE_URL: http://ops-store:8002
+      OPS_MODELS_URL: http://ops-models:8004
+      OPS_EXPLAIN_URL: http://ops-explain:8005
+      OPS_INGEST_URL: http://ops-ingest:8001
+      # OILOPS_API_KEY: ""  # Descomente e defina para ativar autenticação (LAC-02)
+      PYTHONPATH: /app
+    ports:
+      # Porta 8000 é a única porta exposta ao host externamente
+      - "8000:8000"
+    depends_on:
+      ops-ingest:
+        condition: service_healthy
+      ops-store:
+        condition: service_healthy
+      ops-feature:
+        condition: service_healthy
+      ops-models:
+        condition: service_healthy
+      ops-explain:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # -------------------------------------------------------------------------
+  # ops-ui — dashboard Angular 17 (porta 3000)
+  # NOTA: Este serviço usa um Dockerfile placeholder enquanto TASK-034
+  # (Dockerfile multi-stage Angular + nginx) não é implementada.
+  # TASK-034 substituirá o Dockerfile com build Angular + nginx completo.
+  # O nginx.conf já inclui proxy /api/ -> ops-api:8000.
+  # -------------------------------------------------------------------------
+  ops-ui:
+    build:
+      context: .
+      dockerfile: ops-ui/Dockerfile
+    image: oilops/ops-ui:latest
+    container_name: oilops-ops-ui
+    restart: unless-stopped
+    networks:
+      - oilops-net
+    ports:
+      - "3000:80"
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
