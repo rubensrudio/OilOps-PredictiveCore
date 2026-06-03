@@ -12,6 +12,9 @@ pydantic-settings==2.3.4
 
 # Storage backends
 duckdb==0.10.3
+# Required by DuckDB at query time for ::TIMESTAMPTZ casts (lazy-imported);
+# absent it raises "Required module 'pytz' failed to import" on fetchall().
+pytz==2024.1
 
 # Structured JSON logging (shared logging_config.py dependency)
 python-json-logger==2.0.7
