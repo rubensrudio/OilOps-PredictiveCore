@@ -19,7 +19,7 @@ import math
 import numpy as np
 import pytest
 
-from app.extractors.vibration import VibrationFeatureExtractor
+from ops_feature.app.extractors.vibration import VibrationFeatureExtractor
 
 
 # ---------------------------------------------------------------------------
