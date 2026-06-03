@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Build artifacts
+build/
+dist/
+
+# Specs/docs internos
+docs/
+.specs/
+
+# Node / Angular
+node_modules/
+.angular/
+
+# ML artifacts grandes (gerenciar via LFS se precisar)
+*.pkl
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude
+.claude/
