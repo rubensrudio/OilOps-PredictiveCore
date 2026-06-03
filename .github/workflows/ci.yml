@@ -1,0 +1,72 @@
+name: CI
+
+# Lint + test gate for OilOps-PredictiveCore.
+# Runs ruff (lint) and pytest across every Python service module, plus the
+# Angular ops-ui build. The README "build" badge reflects this workflow.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python lint & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false # ONNX model not required for lint/unit tests
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff pytest
+
+      - name: Install per-module requirements
+        run: |
+          for req in ops-store ops-ingest ops-feature ops-models ops-explain ops-api ops-cli ops-reference; do
+            if [ -f "$req/requirements.txt" ]; then
+              echo "==> installing $req/requirements.txt"
+              python -m pip install -r "$req/requirements.txt"
+            fi
+          done
+
+      - name: Lint (ruff)
+        run: python -m ruff check ops-store ops-ingest ops-feature ops-models ops-explain ops-api shared
+
+      - name: Test (pytest)
+        run: python -m pytest ops-store ops-ingest ops-feature ops-models ops-explain ops-api ops-cli ops-reference shared -v --tb=short
+
+  ui:
+    name: ops-ui build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ops-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ops-ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (production)
+        run: npm run build

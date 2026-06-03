@@ -15,9 +15,10 @@ ENV/
 build/
 dist/
 
-# Specs/docs internos
-docs/
+# Internal specs (not published). Public docs/ (PRD, architecture, benchmarks,
+# screenshots) ARE tracked and referenced from the README.
 .specs/
+docs/screenshots/_src/.playwright-cli/
 
 # Node / Angular
 node_modules/
@@ -34,3 +35,6 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Playwright CLI scratch (screenshot capture)
+.playwright-cli/

@@ -1,0 +1,26 @@
+OilOps-PredictiveCore
+Copyright 2026 Rubens Rudio
+
+This product includes software developed by Rubens Rudio.
+
+Licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+------------------------------------------------------------------------
+ADVISORY-ONLY NOTICE (RN-06)
+------------------------------------------------------------------------
+This software is an ADVISORY predictive-maintenance system. It is NOT a
+safety-rated system and is NOT certified for safety-instrumented functions
+(SIF) or any SIL-classified application. Predictions MUST NOT be used as the
+sole basis for safety-critical decisions. Every API response carries the
+header `X-Advisory-Only: true`. Always consult qualified engineering
+personnel and certified safety systems.
+
+------------------------------------------------------------------------
+THIRD-PARTY AND REFERENCE DATA
+------------------------------------------------------------------------
+The reference vibration model documentation references the Case Western
+Reserve University (CWRU) Bearing Data Center dataset
+(https://engineering.case.edu/bearingdatacenter), used under its public /
+academic-use terms. No CWRU data is redistributed in this repository; the
+training pipeline generates synthetic data by default. See
+ops-reference/datasets/cwru_sample/README.md for details.
