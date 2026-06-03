@@ -1,0 +1,12 @@
+# =============================================================================
+# .gitattributes — OilOps-PredictiveCore
+# =============================================================================
+
+# Normalise line endings for all text files on checkout
+* text=auto
+
+# Git LFS: ONNX model artefacts (ops-reference/models/*.onnx, volumes)
+*.onnx filter=lfs diff=lfs merge=lfs -text
+
+# Git LFS: binary model artefacts (good practice — covers TF SavedModel binaries)
+*.bin filter=lfs diff=lfs merge=lfs -text
